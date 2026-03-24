@@ -1,0 +1,29 @@
+services:
+  db:
+    image: postgres:16
+    container_name: collectibles_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: collectibles_vault
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  api:
+    image: ${IMAGE_TAG}
+    container_name: collectibles_api
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      APP_TITLE: CollectiblesVault API
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/collectibles_vault
+      JWT_SECRET: ${JWT_SECRET:-super_secret_change_me}
+      JWT_ALGORITHM: HS256
+      JWT_EXP_MINUTES: "60"
+    ports:
+      - "8000:8000"
+
+volumes:
+  postgres_data:

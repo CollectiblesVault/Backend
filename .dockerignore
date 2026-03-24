@@ -1,0 +1,8 @@
+.cursor
+venv
+.git
+.github
+__pycache__
+*.pyc
+.env
+*.md

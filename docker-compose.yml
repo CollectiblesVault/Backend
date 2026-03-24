@@ -9,9 +9,10 @@ services:
       POSTGRES_PASSWORD: postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
 
   api:
-    image: ${IMAGE_TAG}
+    image: ${IMAGE_TAG:-ghcr.io/collectiblesvault/collectibles-vault-api:latest}
     container_name: collectibles_api
     restart: unless-stopped
     depends_on:

@@ -11,9 +11,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
 
   api:
-    # Для локального запуска удобно иметь дефолт.
-    # В проде GitHub Actions задаёт IMAGE_TAG (например из GHCR).
-    image: ${IMAGE_TAG:-collectibles-vault-api:local}
+    image: ${IMAGE_TAG}
     container_name: collectibles_api
     restart: unless-stopped
     depends_on:

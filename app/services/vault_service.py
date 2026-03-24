@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException, status
+from psycopg2 import IntegrityError
 
 from app.core.security import SecurityManager
 from app.db.repository import VaultRepository
@@ -20,6 +22,8 @@ from app.schemas import (
     WishlistCreateRequest,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class VaultService:
     def __init__(self, repository: VaultRepository, security_manager: SecurityManager) -> None:
@@ -30,11 +34,25 @@ class VaultService:
         existing_user = self._repository.get_user_by_email(payload.email)
         if existing_user:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already exists")
-        hashed_password = self._security_manager.hash_password(payload.password)
-        user = self._repository.create_user(payload.email, hashed_password)
-        self._repository.create_default_categories(int(user["id"]))
-        token = self._security_manager.create_access_token(str(user["id"]))
-        return {"user": user, "access_token": token, "token_type": "bearer"}
+        try:
+            hashed_password = self._security_manager.hash_password(payload.password)
+            user = self._repository.create_user(payload.email, hashed_password)
+            if not user or user.get("id") is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="User creation failed",
+                )
+            uid = int(user["id"])
+            self._repository.create_default_categories(uid)
+            token = self._security_manager.create_access_token(str(uid))
+            return {"user": user, "access_token": token, "token_type": "bearer"}
+        except IntegrityError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already exists") from None
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("register failed for %s", payload.email)
+            raise
 
     def login(self, payload: LoginRequest) -> dict[str, Any]:
         user = self._repository.get_user_by_email(payload.email)

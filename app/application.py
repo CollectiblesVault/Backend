@@ -28,12 +28,19 @@ class AppFactory:
             yield
             self._database.disconnect()
 
-        app = FastAPI(title=self._settings.app_title, lifespan=lifespan)
+        prefix = self._settings.api_prefix
+        app = FastAPI(
+            title=self._settings.app_title,
+            lifespan=lifespan,
+            docs_url=f"{prefix}/docs",
+            redoc_url=f"{prefix}/redoc",
+            openapi_url=f"{prefix}/openapi.json",
+        )
 
         health_controller = HealthController(database=self._database)
         vault_controller = VaultController(service=self._service)
-        app.include_router(health_controller.router)
-        app.include_router(vault_controller.router)
+        app.include_router(health_controller.router, prefix=prefix)
+        app.include_router(vault_controller.router, prefix=prefix)
         return app
 
 

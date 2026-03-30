@@ -4,8 +4,6 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from psycopg2.extras import RealDictCursor
-
 from app.db.database import Database
 
 
@@ -13,18 +11,26 @@ class VaultRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
 
+    @staticmethod
+    def _map_rows(columns: list[str], rows: list[tuple[Any, ...]]) -> list[dict[str, Any]]:
+        return [dict(zip(columns, row, strict=False)) for row in rows]
+
     def _fetch_all(self, query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         with self._database.connection() as connection:
-            with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            with connection.cursor() as cursor:
                 cursor.execute(query, params)
-                return [dict(row) for row in cursor.fetchall()]
+                columns = [col[0] for col in cursor.description or []]
+                return self._map_rows(columns, cursor.fetchall())
 
     def _fetch_one(self, query: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
         with self._database.connection() as connection:
-            with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            with connection.cursor() as cursor:
                 cursor.execute(query, params)
                 row = cursor.fetchone()
-                return dict(row) if row else None
+                if not row:
+                    return None
+                columns = [col[0] for col in cursor.description or []]
+                return dict(zip(columns, row, strict=False))
 
     def _execute(self, query: str, params: tuple[Any, ...] = ()) -> None:
         with self._database.connection() as connection:

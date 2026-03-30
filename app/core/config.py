@@ -11,7 +11,7 @@ class Settings:
         self.app_port: int = int(os.getenv("APP_PORT", "8000"))
         self.database_url: str = os.getenv(
             "DATABASE_URL",
-            "postgresql://postgres:postgres@db:5432/collectibles_vault",
+            "postgresql://postgres:postgres@93.77.160.130:5432/collectibles_vault",
         )
         self.jwt_secret: str = os.getenv("JWT_SECRET", "change_me_in_production")
         self.jwt_algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")

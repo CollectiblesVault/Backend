@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException, status
-from psycopg2 import IntegrityError
+from psycopg import IntegrityError
 
 from app.core.security import SecurityManager
 from app.db.repository import VaultRepository

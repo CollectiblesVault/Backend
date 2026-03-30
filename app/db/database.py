@@ -3,29 +3,23 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Iterator
 
-from psycopg2.extensions import connection
-from psycopg2.pool import SimpleConnectionPool
+from psycopg import Connection, connect
 
 
 class Database:
     def __init__(self, database_url: str) -> None:
-        self._pool = SimpleConnectionPool(
-            minconn=1,
-            maxconn=10,
-            dsn=database_url,
-        )
+        self._database_url = database_url
 
     def connect(self) -> None:
-        db_connection = self._pool.getconn()
-        self._pool.putconn(db_connection)
+        with connect(self._database_url) as db_connection:
+            db_connection.execute("SELECT 1")
 
     def disconnect(self) -> None:
-        self._pool.closeall()
+        return None
 
     @contextmanager
-    def connection(self) -> Iterator[connection]:
-        db_connection = self._pool.getconn()
-        db_connection.autocommit = False
+    def connection(self) -> Iterator[Connection]:
+        db_connection = connect(self._database_url)
         try:
             yield db_connection
             db_connection.commit()
@@ -33,5 +27,5 @@ class Database:
             db_connection.rollback()
             raise
         finally:
-            self._pool.putconn(db_connection)
+            db_connection.close()
 

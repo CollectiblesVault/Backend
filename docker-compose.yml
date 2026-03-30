@@ -20,6 +20,7 @@ services:
       start_period: 10s
 
   # Re-applies schema when the data volume already existed (init scripts are skipped).
+  # Logic is inlined so bind-mounted scripts are not executed (avoids exit 126 on some hosts).
   migrate:
     image: postgres:16
     container_name: collectibles_migrate
@@ -29,13 +30,18 @@ services:
         condition: service_healthy
     environment:
       PGPASSWORD: postgres
-      PGHOST: db
-      PGUSER: postgres
-      POSTGRES_TARGET_DB: collectibles_vault
     volumes:
       - ./db/schema.sql:/schema.sql:ro
-      - ./db/docker_migrate.sh:/docker_migrate.sh:ro
-    entrypoint: ["/bin/bash", "/docker_migrate.sh"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        until pg_isready -h db -U postgres >/dev/null 2>&1; do sleep 1; done
+        exists=$$(psql -h db -U postgres -d postgres -Atc "SELECT 1 FROM pg_database WHERE datname = 'collectibles_vault'" || true)
+        if [ -z "$$exists" ]; then
+          psql -h db -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE collectibles_vault;'
+        fi
+        psql -h db -U postgres -d collectibles_vault -v ON_ERROR_STOP=1 -f /schema.sql
 
   api:
     image: ${IMAGE_TAG:-ghcr.io/collectiblesvault/collectibles-vault-api:latest}

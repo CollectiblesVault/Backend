@@ -4,8 +4,10 @@ import logging
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from psycopg import connect
+from psycopg import sql
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,30 @@ def _split_sql_statements(sql: str) -> list[str]:
     return statements
 
 
+def _get_db_name(database_url: str) -> str:
+    parsed = urlsplit(database_url)
+    db_name = parsed.path.lstrip("/")
+    if not db_name:
+        raise RuntimeError("DATABASE_URL must include a database name")
+    return db_name
+
+
+def _with_database(database_url: str, db_name: str) -> str:
+    parsed = urlsplit(database_url)
+    return urlunsplit((parsed.scheme, parsed.netloc, f"/{db_name}", parsed.query, parsed.fragment))
+
+
+def _ensure_database_exists(database_url: str, db_name: str) -> None:
+    admin_url = _with_database(database_url, "postgres")
+    with connect(admin_url, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
+            if cur.fetchone():
+                return
+            cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db_name)))
+            logger.info("created database %s", db_name)
+
+
 def ensure_schema_applied(database_url: str) -> None:
     if os.getenv("SKIP_SCHEMA_BOOTSTRAP", "").lower() in {"1", "true", "yes"}:
         logger.info("schema bootstrap skipped (SKIP_SCHEMA_BOOTSTRAP)")
@@ -52,6 +78,8 @@ def ensure_schema_applied(database_url: str) -> None:
             "db/schema.sql not found (set SCHEMA_SQL_PATH or ship db/schema.sql with the image)",
         )
         raise RuntimeError("schema.sql not found; cannot bootstrap database")
+    db_name = _get_db_name(database_url)
+    _ensure_database_exists(database_url, db_name)
     sql_text = path.read_text(encoding="utf-8")
     statements = _split_sql_statements(sql_text)
     with connect(database_url, autocommit=True) as conn:

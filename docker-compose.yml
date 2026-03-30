@@ -12,13 +12,40 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+  # Re-applies schema when the data volume already existed (init scripts are skipped).
+  migrate:
+    image: postgres:16
+    container_name: collectibles_migrate
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: postgres
+      PGHOST: db
+      PGUSER: postgres
+      POSTGRES_TARGET_DB: collectibles_vault
+    volumes:
+      - ./db/schema.sql:/schema.sql:ro
+      - ./db/docker_migrate.sh:/docker_migrate.sh:ro
+    entrypoint: ["/bin/bash", "/docker_migrate.sh"]
 
   api:
     image: ${IMAGE_TAG:-ghcr.io/collectiblesvault/collectibles-vault-api:latest}
     container_name: collectibles_api
     restart: unless-stopped
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       APP_TITLE: CollectiblesVault API
       DATABASE_URL: postgresql://postgres:postgres@db:5432/collectibles_vault

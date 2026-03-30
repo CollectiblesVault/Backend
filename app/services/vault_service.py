@@ -63,8 +63,15 @@ class VaultService:
         user = self._repository.get_user_by_email(payload.email)
         if not user:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-        if not self._security_manager.verify_password(payload.password, str(user["password_hash"])):
+
+        is_valid, upgraded_hash = self._security_manager.verify_password_and_upgrade_hash(
+            payload.password,
+            str(user.get("password_hash") or ""),
+        )
+        if not is_valid:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        if upgraded_hash:
+            self._repository.update_user_password(int(user["id"]), upgraded_hash)
         token = self._security_manager.create_access_token(str(user["id"]))
         return {"access_token": token, "token_type": "bearer"}
 
@@ -104,8 +111,15 @@ class VaultService:
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
         stored = self._repository.get_user_by_email(str(user["email"]))
-        if not stored or not self._security_manager.verify_password(payload.current_password, str(stored["password_hash"])):
+
+        is_valid, upgraded_hash = self._security_manager.verify_password_and_upgrade_hash(
+            payload.current_password,
+            str((stored or {}).get("password_hash") or ""),
+        )
+        if not stored or not is_valid:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is invalid")
+        if upgraded_hash:
+            self._repository.update_user_password(user_id, upgraded_hash)
         self._repository.update_user_password(user_id, self._security_manager.hash_password(payload.new_password))
         return {"updated": True}
 

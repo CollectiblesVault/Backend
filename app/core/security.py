@@ -34,6 +34,24 @@ class SecurityManager:
         password_hash = self._pre_hash(plain_password)
         return self._pwd_context.verify(password_hash, hashed_password)
 
+    def verify_password_and_upgrade_hash(self, plain_password: str, hashed_password: str) -> tuple[bool, str | None]:
+        """
+        Supports legacy hashes (bcrypt of raw password) and upgrades them
+        to the current scheme (bcrypt of SHA-256(password)) after a successful check.
+        """
+        if not hashed_password:
+            return False, None
+
+        if self.verify_password(plain_password, hashed_password):
+            return True, None
+
+        is_legacy_valid = self._pwd_context.verify(plain_password, hashed_password)
+        if not is_legacy_valid:
+            return False, None
+
+        upgraded_hash = self.hash_password(plain_password)
+        return True, upgraded_hash
+
     def create_access_token(self, subject: str) -> str:
         expires_at = datetime.now(timezone.utc) + timedelta(
             minutes=self._settings.jwt_exp_minutes

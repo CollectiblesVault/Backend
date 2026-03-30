@@ -10,6 +10,7 @@ from app.core.config import Settings
 from app.core.security import SecurityManager
 from app.db.database import Database
 from app.db.repository import VaultRepository
+from app.db.schema_bootstrap import ensure_schema_applied
 from app.services.vault_service import VaultService
 
 
@@ -24,6 +25,7 @@ class AppFactory:
     def create_app(self) -> FastAPI:
         @asynccontextmanager
         async def lifespan(_: FastAPI):
+            ensure_schema_applied(self._settings.database_url)
             self._database.connect()
             yield
             self._database.disconnect()

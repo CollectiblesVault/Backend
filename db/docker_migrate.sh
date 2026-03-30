@@ -20,4 +20,10 @@ if [ -z "$exists" ]; then
     -c "CREATE DATABASE \"${dbname}\";"
 fi
 
-psql -h "$host" -p "$port" -U "$user" -d "$dbname" -v ON_ERROR_STOP=1 -f /schema.sql
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+schema_file="${SCHEMA_FILE:-$script_dir/schema.sql}"
+if [ ! -f "$schema_file" ]; then
+  echo "migrate: schema file not found: $schema_file" >&2
+  exit 1
+fi
+psql -h "$host" -p "$port" -U "$user" -d "$dbname" -v ON_ERROR_STOP=1 -f "$schema_file"

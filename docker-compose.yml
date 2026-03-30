@@ -31,17 +31,22 @@ services:
     environment:
       PGPASSWORD: postgres
     volumes:
-      - ./db/schema.sql:/schema.sql:ro
+      - ./db:/migrate-db:ro
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         set -eu
         until pg_isready -h db -U postgres >/dev/null 2>&1; do sleep 1; done
+        if [ ! -f /migrate-db/schema.sql ]; then
+          echo "migrate: need a regular file at ./db/schema.sql (run compose from repo root; ls -la /migrate-db below)"
+          ls -la /migrate-db 2>&1 || true
+          exit 1
+        fi
         exists=$$(psql -h db -U postgres -d postgres -Atc "SELECT 1 FROM pg_database WHERE datname = 'collectibles_vault'" || true)
         if [ -z "$$exists" ]; then
           psql -h db -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE collectibles_vault;'
         fi
-        psql -h db -U postgres -d collectibles_vault -v ON_ERROR_STOP=1 -f /schema.sql
+        psql -h db -U postgres -d collectibles_vault -v ON_ERROR_STOP=1 -f /migrate-db/schema.sql
 
   api:
     image: ${IMAGE_TAG:-ghcr.io/collectiblesvault/collectibles-vault-api:latest}

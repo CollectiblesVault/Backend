@@ -49,13 +49,87 @@ class VaultRepository:
 
     def get_user_by_email(self, email: str) -> dict[str, Any] | None:
         return self._fetch_one(
-            "SELECT id, email, password_hash, created_at FROM users WHERE email = %s",
+            """
+            SELECT id, email, password_hash, display_name, bio, avatar_url, is_public, is_active, created_at, updated_at
+            FROM users
+            WHERE email = %s
+            """,
             (email,),
         )
 
     def get_user_by_id(self, user_id: int) -> dict[str, Any] | None:
         return self._fetch_one(
-            "SELECT id, email, created_at FROM users WHERE id = %s",
+            """
+            SELECT id, email, display_name, bio, avatar_url, is_public, is_active, created_at, updated_at
+            FROM users
+            WHERE id = %s
+            """,
+            (user_id,),
+        )
+
+    def update_user_profile(
+        self,
+        user_id: int,
+        email: str | None,
+        display_name: str | None,
+        bio: str | None,
+        avatar_url: str | None,
+    ) -> dict[str, Any] | None:
+        return self._fetch_one(
+            """
+            UPDATE users
+            SET
+                email = COALESCE(%s, email),
+                display_name = COALESCE(%s, display_name),
+                bio = COALESCE(%s, bio),
+                avatar_url = COALESCE(%s, avatar_url),
+                updated_at = NOW()
+            WHERE id = %s
+            RETURNING id, email, display_name, bio, avatar_url, is_public, is_active, created_at, updated_at
+            """,
+            (email, display_name, bio, avatar_url, user_id),
+        )
+
+    def update_user_password(self, user_id: int, hashed_password: str) -> None:
+        self._execute(
+            """
+            UPDATE users
+            SET password_hash = %s, updated_at = NOW()
+            WHERE id = %s
+            """,
+            (hashed_password, user_id),
+        )
+
+    def deactivate_user(self, user_id: int) -> dict[str, Any] | None:
+        return self._fetch_one(
+            """
+            UPDATE users
+            SET is_active = FALSE, deactivated_at = NOW(), updated_at = NOW()
+            WHERE id = %s
+            RETURNING id, email, is_active, deactivated_at
+            """,
+            (user_id,),
+        )
+
+    def get_public_users(self, limit: int, offset: int) -> list[dict[str, Any]]:
+        return self._fetch_all(
+            """
+            SELECT id, email, display_name, bio, avatar_url, created_at
+            FROM users
+            WHERE is_active = TRUE AND is_public = TRUE
+            ORDER BY id
+            LIMIT %s OFFSET %s
+            """,
+            (limit, offset),
+        )
+
+    def get_public_user_by_id(self, user_id: int) -> dict[str, Any] | None:
+        return self._fetch_one(
+            """
+            SELECT id, email, display_name, bio, avatar_url, created_at
+            FROM users
+            WHERE id = %s AND is_active = TRUE AND is_public = TRUE
+            """,
             (user_id,),
         )
 
@@ -85,7 +159,19 @@ class VaultRepository:
 
     def get_collections(self, user_id: int) -> list[dict[str, Any]]:
         return self._fetch_all(
-            "SELECT id, user_id, name, description, created_at FROM collections WHERE user_id = %s ORDER BY id",
+            "SELECT id, user_id, name, description, is_public, updated_at, created_at FROM collections WHERE user_id = %s ORDER BY id",
+            (user_id,),
+        )
+
+    def get_public_collections_by_user(self, user_id: int) -> list[dict[str, Any]]:
+        return self._fetch_all(
+            """
+            SELECT c.id, c.user_id, c.name, c.description, c.is_public, c.updated_at, c.created_at
+            FROM collections c
+            JOIN users u ON u.id = c.user_id
+            WHERE c.user_id = %s AND c.is_public = TRUE AND u.is_active = TRUE AND u.is_public = TRUE
+            ORDER BY c.id
+            """,
             (user_id,),
         )
 
@@ -94,7 +180,7 @@ class VaultRepository:
             """
             INSERT INTO collections (user_id, name, description)
             VALUES (%s, %s, %s)
-            RETURNING id, user_id, name, description, created_at
+            RETURNING id, user_id, name, description, is_public, updated_at, created_at
             """,
             (user_id, name, description),
         ) or {}
@@ -108,9 +194,9 @@ class VaultRepository:
         updated_row = self._fetch_one(
             """
             UPDATE collections
-            SET name = %s, description = %s
+            SET name = %s, description = %s, updated_at = NOW()
             WHERE id = %s AND user_id = %s
-            RETURNING id, user_id, name, description, created_at
+            RETURNING id, user_id, name, description, is_public, updated_at, created_at
             """,
             (name, description, collection_id, user_id),
         )
@@ -125,6 +211,17 @@ class VaultRepository:
         self.create_change_event(user_id, "collection", collection_id, "delete", str(old_row), None)
         return True
 
+    def set_collection_visibility(self, user_id: int, collection_id: int, is_public: bool) -> dict[str, Any] | None:
+        return self._fetch_one(
+            """
+            UPDATE collections
+            SET is_public = %s, updated_at = NOW()
+            WHERE id = %s AND user_id = %s
+            RETURNING id, user_id, name, description, is_public, updated_at, created_at
+            """,
+            (is_public, collection_id, user_id),
+        )
+
     def get_items(self, user_id: int) -> list[dict[str, Any]]:
         return self._fetch_all(
             """
@@ -135,6 +232,22 @@ class VaultRepository:
             ORDER BY i.id
             """,
             (user_id,),
+        )
+
+    def get_public_items_by_collection(self, collection_id: int) -> list[dict[str, Any]]:
+        return self._fetch_all(
+            """
+            SELECT i.id, i.collection_id, i.category_id, i.name, i.description, i.price, i.image_url, i.is_public, i.created_at
+            FROM items i
+            JOIN collections c ON c.id = i.collection_id
+            JOIN users u ON u.id = c.user_id
+            WHERE i.collection_id = %s
+              AND c.is_public = TRUE
+              AND u.is_active = TRUE
+              AND u.is_public = TRUE
+            ORDER BY i.id
+            """,
+            (collection_id,),
         )
 
     def create_item(
@@ -182,7 +295,7 @@ class VaultRepository:
             UPDATE items
             SET name = %s, description = %s, price = %s, image_url = %s
             WHERE id = %s
-            RETURNING id, collection_id, category_id, name, description, price, image_url, created_at
+            RETURNING id, collection_id, category_id, name, description, price, image_url, is_public, created_at
             """,
             (name, description, price, image_url, item_id),
         )
@@ -204,6 +317,18 @@ class VaultRepository:
         self.create_change_event(user_id, "item", item_id, "delete", str(old_row), None)
         return True
 
+    def set_item_visibility(self, user_id: int, item_id: int, is_public: bool) -> dict[str, Any] | None:
+        return self._fetch_one(
+            """
+            UPDATE items i
+            SET is_public = %s
+            FROM collections c
+            WHERE i.id = %s AND c.id = i.collection_id AND c.user_id = %s
+            RETURNING i.id, i.collection_id, i.category_id, i.name, i.description, i.price, i.image_url, i.is_public, i.created_at
+            """,
+            (is_public, item_id, user_id),
+        )
+
     def get_wishlist(self, user_id: int) -> list[dict[str, Any]]:
         return self._fetch_all("SELECT id, user_id, item_name, item_id, created_at FROM wishlists WHERE user_id = %s", (user_id,))
 
@@ -217,10 +342,31 @@ class VaultRepository:
             (user_id, item_name, item_id),
         ) or {}
 
+    def add_item_to_wishlist(self, user_id: int, item_id: int) -> dict[str, Any] | None:
+        return self._fetch_one(
+            """
+            INSERT INTO wishlists (user_id, item_name, item_id)
+            SELECT %s, i.name, i.id
+            FROM items i
+            JOIN collections c ON c.id = i.collection_id
+            JOIN users u ON u.id = c.user_id
+            WHERE i.id = %s AND c.is_public = TRUE AND u.is_active = TRUE AND u.is_public = TRUE
+            ON CONFLICT DO NOTHING
+            RETURNING id, user_id, item_name, item_id, created_at
+            """,
+            (user_id, item_id),
+        )
+
     def delete_wishlist(self, user_id: int, wishlist_id: int) -> bool:
         with self._database.connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute("DELETE FROM wishlists WHERE id = %s AND user_id = %s", (wishlist_id, user_id))
+                return cursor.rowcount > 0
+
+    def delete_item_from_wishlist(self, user_id: int, item_id: int) -> bool:
+        with self._database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("DELETE FROM wishlists WHERE user_id = %s AND item_id = %s", (user_id, item_id))
                 return cursor.rowcount > 0
 
     def create_like(self, user_id: int, entity_type: str, entity_id: int) -> dict[str, Any]:
@@ -232,6 +378,30 @@ class VaultRepository:
             """,
             (user_id, entity_type, entity_id),
         ) or {}
+
+    def create_item_like(self, user_id: int, item_id: int) -> dict[str, Any] | None:
+        return self._fetch_one(
+            """
+            INSERT INTO likes (user_id, entity_type, entity_id)
+            SELECT %s, 'item', i.id
+            FROM items i
+            JOIN collections c ON c.id = i.collection_id
+            JOIN users u ON u.id = c.user_id
+            WHERE i.id = %s AND c.is_public = TRUE AND u.is_active = TRUE AND u.is_public = TRUE
+            ON CONFLICT DO NOTHING
+            RETURNING id, user_id, entity_type, entity_id, created_at
+            """,
+            (user_id, item_id),
+        )
+
+    def delete_item_like(self, user_id: int, item_id: int) -> bool:
+        with self._database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM likes WHERE user_id = %s AND entity_type = 'item' AND entity_id = %s",
+                    (user_id, item_id),
+                )
+                return cursor.rowcount > 0
 
     def create_comment(self, user_id: int, entity_type: str, entity_id: int, text: str) -> dict[str, Any]:
         return self._fetch_one(
@@ -252,6 +422,31 @@ class VaultRepository:
             ORDER BY created_at DESC
             """,
             (entity_type, entity_id),
+        )
+
+    def create_item_comment(self, user_id: int, item_id: int, text: str) -> dict[str, Any] | None:
+        return self._fetch_one(
+            """
+            INSERT INTO comments (user_id, entity_type, entity_id, text)
+            SELECT %s, 'item', i.id, %s
+            FROM items i
+            JOIN collections c ON c.id = i.collection_id
+            JOIN users u ON u.id = c.user_id
+            WHERE i.id = %s AND c.is_public = TRUE AND u.is_active = TRUE AND u.is_public = TRUE
+            RETURNING id, user_id, entity_type, entity_id, text, created_at
+            """,
+            (user_id, text, item_id),
+        )
+
+    def get_item_comments(self, item_id: int) -> list[dict[str, Any]]:
+        return self._fetch_all(
+            """
+            SELECT id, user_id, entity_type, entity_id, text, created_at
+            FROM comments
+            WHERE entity_type = 'item' AND entity_id = %s
+            ORDER BY created_at DESC
+            """,
+            (item_id,),
         )
 
     def create_lot(
@@ -368,3 +563,47 @@ class VaultRepository:
             ORDER BY {order_clause}
         """
         return self._fetch_all(query, (user_id,))
+
+    def report_summary(self, user_id: int, from_date: datetime, to_date: datetime) -> dict[str, Any]:
+        return self._fetch_one(
+            """
+            SELECT
+                COUNT(DISTINCT c.id) AS collections_count,
+                COUNT(i.id) AS items_count,
+                COALESCE(SUM(i.price), 0) AS total_items_price,
+                (
+                    SELECT COUNT(*)
+                    FROM wishlists w
+                    WHERE w.user_id = %s AND w.created_at BETWEEN %s AND %s
+                ) AS wishlist_count
+            FROM collections c
+            LEFT JOIN items i ON i.collection_id = c.id AND i.created_at BETWEEN %s AND %s
+            WHERE c.user_id = %s
+            """,
+            (user_id, from_date, to_date, from_date, to_date, user_id),
+        ) or {}
+
+    def report_collections_period(self, user_id: int, from_date: datetime, to_date: datetime) -> list[dict[str, Any]]:
+        return self._fetch_all(
+            """
+            SELECT c.id AS collection_id, c.name AS collection_name, COUNT(i.id) AS items_count, COALESCE(SUM(i.price), 0) AS total_price
+            FROM collections c
+            LEFT JOIN items i ON i.collection_id = c.id AND i.created_at BETWEEN %s AND %s
+            WHERE c.user_id = %s
+            GROUP BY c.id, c.name
+            ORDER BY c.id
+            """,
+            (from_date, to_date, user_id),
+        )
+
+    def report_items_period(self, user_id: int, from_date: datetime, to_date: datetime) -> list[dict[str, Any]]:
+        return self._fetch_all(
+            """
+            SELECT i.id, i.name, i.price, i.created_at, c.id AS collection_id, c.name AS collection_name
+            FROM items i
+            JOIN collections c ON c.id = i.collection_id
+            WHERE c.user_id = %s AND i.created_at BETWEEN %s AND %s
+            ORDER BY i.created_at
+            """,
+            (user_id, from_date, to_date),
+        )

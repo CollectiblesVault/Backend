@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from csv import DictWriter
+from datetime import datetime, timedelta, timezone
+from io import StringIO
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -18,7 +20,10 @@ from app.schemas import (
     ItemUpdateRequest,
     LoginRequest,
     LotCreateRequest,
+    PasswordUpdateRequest,
+    ProfileUpdateRequest,
     RegisterRequest,
+    VisibilityUpdateRequest,
     WishlistCreateRequest,
 )
 
@@ -75,6 +80,50 @@ class VaultService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
         return user
 
+    def update_me(self, user_id: int, payload: ProfileUpdateRequest) -> dict[str, Any]:
+        if payload.email:
+            existing = self._repository.get_user_by_email(payload.email)
+            if existing and int(existing["id"]) != user_id:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already exists")
+        try:
+            updated = self._repository.update_user_profile(
+                user_id=user_id,
+                email=payload.email,
+                display_name=payload.display_name,
+                bio=payload.bio,
+                avatar_url=payload.avatar_url,
+            )
+            if not updated:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+            return updated
+        except IntegrityError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already exists") from None
+
+    def change_password(self, user_id: int, payload: PasswordUpdateRequest) -> dict[str, bool]:
+        user = self._repository.get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        stored = self._repository.get_user_by_email(str(user["email"]))
+        if not stored or not self._security_manager.verify_password(payload.current_password, str(stored["password_hash"])):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is invalid")
+        self._repository.update_user_password(user_id, self._security_manager.hash_password(payload.new_password))
+        return {"updated": True}
+
+    def deactivate_me(self, user_id: int) -> dict[str, Any]:
+        result = self._repository.deactivate_user(user_id)
+        if not result:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        return result
+
+    def get_public_users(self, limit: int, offset: int) -> list[dict[str, Any]]:
+        return self._repository.get_public_users(limit=limit, offset=offset)
+
+    def get_public_user(self, user_id: int) -> dict[str, Any]:
+        user = self._repository.get_public_user_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        return user
+
     def get_collections(self, user_id: int) -> list[dict[str, Any]]:
         return self._repository.get_collections(user_id)
 
@@ -92,6 +141,15 @@ class VaultService:
         if not is_deleted:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
         return {"deleted": True}
+
+    def get_public_collections_by_user(self, user_id: int) -> list[dict[str, Any]]:
+        return self._repository.get_public_collections_by_user(user_id)
+
+    def set_collection_visibility(self, user_id: int, collection_id: int, payload: VisibilityUpdateRequest) -> dict[str, Any]:
+        result = self._repository.set_collection_visibility(user_id, collection_id, payload.is_public)
+        if not result:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+        return result
 
     def get_items(self, user_id: int) -> list[dict[str, Any]]:
         return self._repository.get_items(user_id)
@@ -126,6 +184,15 @@ class VaultService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
         return {"deleted": True}
 
+    def get_public_items_by_collection(self, collection_id: int) -> list[dict[str, Any]]:
+        return self._repository.get_public_items_by_collection(collection_id)
+
+    def set_item_visibility(self, user_id: int, item_id: int, payload: VisibilityUpdateRequest) -> dict[str, Any]:
+        result = self._repository.set_item_visibility(user_id, item_id, payload.is_public)
+        if not result:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
+        return result
+
     def get_categories(self, user_id: int) -> list[dict[str, Any]]:
         return self._repository.get_categories(user_id)
 
@@ -154,6 +221,39 @@ class VaultService:
 
     def get_comments(self, entity_type: str, entity_id: int) -> list[dict[str, Any]]:
         return self._repository.get_comments(entity_type, entity_id)
+
+    def create_item_like(self, user_id: int, item_id: int) -> dict[str, Any]:
+        like = self._repository.create_item_like(user_id, item_id)
+        if not like:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unable to like this item")
+        return like
+
+    def delete_item_like(self, user_id: int, item_id: int) -> dict[str, bool]:
+        deleted = self._repository.delete_item_like(user_id, item_id)
+        if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Like not found")
+        return {"deleted": True}
+
+    def create_item_comment(self, user_id: int, item_id: int, text: str) -> dict[str, Any]:
+        comment = self._repository.create_item_comment(user_id, item_id, text)
+        if not comment:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unable to comment this item")
+        return comment
+
+    def get_item_comments(self, item_id: int) -> list[dict[str, Any]]:
+        return self._repository.get_item_comments(item_id)
+
+    def add_item_to_wishlist(self, user_id: int, item_id: int) -> dict[str, Any]:
+        wishlist_item = self._repository.add_item_to_wishlist(user_id, item_id)
+        if not wishlist_item:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unable to add item to wishlist")
+        return wishlist_item
+
+    def delete_item_from_wishlist(self, user_id: int, item_id: int) -> dict[str, bool]:
+        deleted = self._repository.delete_item_from_wishlist(user_id, item_id)
+        if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Wishlist entry not found")
+        return {"deleted": True}
 
     def create_lot(self, user_id: int, payload: LotCreateRequest) -> dict[str, Any]:
         if payload.end_time <= datetime.now(timezone.utc):
@@ -198,3 +298,37 @@ class VaultService:
 
     def report_category(self, user_id: int, sort_by: str) -> list[dict[str, Any]]:
         return self._repository.report_category(user_id, sort_by=sort_by)
+
+    def report_summary(self, user_id: int, period: str) -> dict[str, Any]:
+        from_date, to_date = self._period_bounds(period)
+        summary = self._repository.report_summary(user_id, from_date, to_date)
+        summary["period"] = period
+        summary["from_date"] = from_date
+        summary["to_date"] = to_date
+        return summary
+
+    def report_summary_csv(self, user_id: int, period: str) -> str:
+        return self._rows_to_csv([self.report_summary(user_id, period)])
+
+    def report_collections_csv(self, user_id: int, from_date: datetime, to_date: datetime) -> str:
+        return self._rows_to_csv(self._repository.report_collections_period(user_id, from_date, to_date))
+
+    def report_items_csv(self, user_id: int, from_date: datetime, to_date: datetime) -> str:
+        return self._rows_to_csv(self._repository.report_items_period(user_id, from_date, to_date))
+
+    def _period_bounds(self, period: str) -> tuple[datetime, datetime]:
+        now = datetime.now(timezone.utc)
+        days = {"week": 7, "month": 30, "year": 365}.get(period)
+        if not days:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="period must be week, month or year")
+        return now.replace(microsecond=0) - timedelta(days=days), now.replace(microsecond=0)
+
+    @staticmethod
+    def _rows_to_csv(rows: list[dict[str, Any]]) -> str:
+        if not rows:
+            return ""
+        output = StringIO()
+        writer = DictWriter(output, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+        return output.getvalue()

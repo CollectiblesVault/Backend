@@ -1,6 +1,6 @@
 # CollectiblesVault — Backend API
 
-REST API для учёта коллекций, wishlist, отчётов, социальных действий и аукционов. Стек: **FastAPI**, **PostgreSQL**, **psycopg2**, **JWT**.
+REST API для учёта коллекций, wishlist, отчётов, социальных действий и аукционов. Стек: **FastAPI**, **PostgreSQL**, **psycopg**, **JWT**.
 
 ## Документация API
 
@@ -110,3 +110,4 @@ docker-compose.yml
 ## Связанные документы
 
 - [USECASE.md](USECASE.md) — сценарии использования (use case).
+- [API_USAGE.md](API_USAGE.md) — примеры запросов `curl` для новых endpoint-ов.

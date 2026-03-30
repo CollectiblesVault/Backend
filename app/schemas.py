@@ -16,6 +16,22 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=6, max_length=128)
 
 
+class ProfileUpdateRequest(BaseModel):
+    email: EmailStr | None = None
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
+    bio: str | None = Field(default=None, max_length=1000)
+    avatar_url: str | None = Field(default=None, max_length=500)
+
+
+class PasswordUpdateRequest(BaseModel):
+    current_password: str = Field(min_length=6, max_length=128)
+    new_password: str = Field(min_length=6, max_length=128)
+
+
+class VisibilityUpdateRequest(BaseModel):
+    is_public: bool
+
+
 class CollectionCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=150)
     description: str | None = Field(default=None, max_length=1000)
@@ -59,6 +75,10 @@ class LikeCreateRequest(BaseModel):
 class CommentCreateRequest(BaseModel):
     entity_type: str = Field(min_length=1, max_length=50)
     entity_id: int
+    text: str = Field(min_length=1, max_length=2000)
+
+
+class ItemCommentCreateRequest(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
 
 

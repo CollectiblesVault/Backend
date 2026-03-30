@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, Query, Response, status
 
 from app.schemas import (
     BidCreateRequest,
@@ -11,12 +11,16 @@ from app.schemas import (
     CollectionCreateRequest,
     CollectionUpdateRequest,
     CommentCreateRequest,
+    ItemCommentCreateRequest,
     ItemCreateRequest,
     ItemUpdateRequest,
     LikeCreateRequest,
     LoginRequest,
     LotCreateRequest,
+    PasswordUpdateRequest,
+    ProfileUpdateRequest,
     RegisterRequest,
+    VisibilityUpdateRequest,
     WishlistCreateRequest,
 )
 from app.services.vault_service import VaultService
@@ -41,19 +45,38 @@ class VaultController:
         self.router.add_api_route("/register", self.register, methods=["POST"], tags=["auth"])
         self.router.add_api_route("/login", self.login, methods=["POST"], tags=["auth"])
         self.router.add_api_route("/auth/me", self.auth_me, methods=["GET"], tags=["auth"])
+        self.router.add_api_route("/auth/me", self.update_me, methods=["PATCH"], tags=["auth"])
+        self.router.add_api_route("/auth/me/password", self.change_password, methods=["POST"], tags=["auth"])
+        self.router.add_api_route("/auth/me/deactivate", self.deactivate_me, methods=["PATCH"], tags=["auth"])
+        self.router.add_api_route("/users", self.get_public_users, methods=["GET"], tags=["users"])
+        self.router.add_api_route("/users/{user_id}", self.get_public_user, methods=["GET"], tags=["users"])
+        self.router.add_api_route("/users/{user_id}/collections", self.get_public_user_collections, methods=["GET"], tags=["users"])
         self.router.add_api_route("/collections", self.get_collections, methods=["GET"], tags=["collections"])
         self.router.add_api_route("/collections", self.create_collection, methods=["POST"], tags=["collections"])
         self.router.add_api_route("/collections/{collection_id}", self.update_collection, methods=["PUT"], tags=["collections"])
         self.router.add_api_route("/collections/{collection_id}", self.delete_collection, methods=["DELETE"], tags=["collections"])
+        self.router.add_api_route("/collections/{collection_id}/items", self.get_public_collection_items, methods=["GET"], tags=["collections"])
+        self.router.add_api_route("/collections/{collection_id}/visibility", self.set_collection_visibility, methods=["PATCH"], tags=["collections"])
         self.router.add_api_route("/items", self.get_items, methods=["GET"], tags=["items"])
         self.router.add_api_route("/items", self.create_item, methods=["POST"], tags=["items"])
         self.router.add_api_route("/items/{item_id}", self.update_item, methods=["PUT"], tags=["items"])
         self.router.add_api_route("/items/{item_id}", self.delete_item, methods=["DELETE"], tags=["items"])
+        self.router.add_api_route("/items/{item_id}/visibility", self.set_item_visibility, methods=["PATCH"], tags=["items"])
+        self.router.add_api_route("/items/{item_id}/like", self.create_item_like, methods=["POST"], tags=["social"])
+        self.router.add_api_route("/items/{item_id}/like", self.delete_item_like, methods=["DELETE"], tags=["social"])
+        self.router.add_api_route("/items/{item_id}/comments", self.create_item_comment, methods=["POST"], tags=["social"])
+        self.router.add_api_route("/items/{item_id}/comments", self.get_item_comments, methods=["GET"], tags=["social"])
+        self.router.add_api_route("/items/{item_id}/wishlist", self.add_item_to_wishlist, methods=["POST"], tags=["wishlist"])
+        self.router.add_api_route("/items/{item_id}/wishlist", self.delete_item_from_wishlist, methods=["DELETE"], tags=["wishlist"])
         self.router.add_api_route("/categories", self.get_categories, methods=["GET"], tags=["categories"])
         self.router.add_api_route("/categories", self.create_category, methods=["POST"], tags=["categories"])
         self.router.add_api_route("/wishlist", self.get_wishlist, methods=["GET"], tags=["wishlist"])
         self.router.add_api_route("/wishlist", self.create_wishlist, methods=["POST"], tags=["wishlist"])
         self.router.add_api_route("/wishlist/{wishlist_id}", self.delete_wishlist, methods=["DELETE"], tags=["wishlist"])
+        self.router.add_api_route("/reports/summary", self.report_summary, methods=["GET"], tags=["reports"])
+        self.router.add_api_route("/reports/summary.csv", self.report_summary_csv, methods=["GET"], tags=["reports"])
+        self.router.add_api_route("/reports/collections.csv", self.report_collections_csv, methods=["GET"], tags=["reports"])
+        self.router.add_api_route("/reports/items.csv", self.report_items_csv, methods=["GET"], tags=["reports"])
         self.router.add_api_route("/reports/collection", self.report_collection, methods=["GET"], tags=["reports"])
         self.router.add_api_route("/reports/item", self.report_item, methods=["GET"], tags=["reports"])
         self.router.add_api_route("/reports/category", self.report_category, methods=["GET"], tags=["reports"])
@@ -73,6 +96,31 @@ class VaultController:
     def auth_me(self, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         user_id = self._get_current_user_id(authorization)
         return self._service.auth_me(user_id)
+
+    def update_me(self, payload: ProfileUpdateRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        user_id = self._get_current_user_id(authorization)
+        return self._service.update_me(user_id, payload)
+
+    def change_password(
+        self,
+        payload: PasswordUpdateRequest,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, bool]:
+        user_id = self._get_current_user_id(authorization)
+        return self._service.change_password(user_id, payload)
+
+    def deactivate_me(self, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        user_id = self._get_current_user_id(authorization)
+        return self._service.deactivate_me(user_id)
+
+    def get_public_users(self, limit: int = Query(default=50, ge=1, le=200), offset: int = Query(default=0, ge=0)) -> list[dict[str, Any]]:
+        return self._service.get_public_users(limit, offset)
+
+    def get_public_user(self, user_id: int) -> dict[str, Any]:
+        return self._service.get_public_user(user_id)
+
+    def get_public_user_collections(self, user_id: int) -> list[dict[str, Any]]:
+        return self._service.get_public_collections_by_user(user_id)
 
     def get_collections(self, authorization: str | None = Header(default=None)) -> list[dict[str, Any]]:
         user_id = self._get_current_user_id(authorization)
@@ -95,6 +143,18 @@ class VaultController:
         user_id = self._get_current_user_id(authorization)
         return self._service.delete_collection(user_id, collection_id)
 
+    def get_public_collection_items(self, collection_id: int) -> list[dict[str, Any]]:
+        return self._service.get_public_items_by_collection(collection_id)
+
+    def set_collection_visibility(
+        self,
+        collection_id: int,
+        payload: VisibilityUpdateRequest,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        user_id = self._get_current_user_id(authorization)
+        return self._service.set_collection_visibility(user_id, collection_id, payload)
+
     def get_items(self, authorization: str | None = Header(default=None)) -> list[dict[str, Any]]:
         user_id = self._get_current_user_id(authorization)
         return self._service.get_items(user_id)
@@ -110,6 +170,15 @@ class VaultController:
     def delete_item(self, item_id: int, authorization: str | None = Header(default=None)) -> dict[str, bool]:
         user_id = self._get_current_user_id(authorization)
         return self._service.delete_item(user_id, item_id)
+
+    def set_item_visibility(
+        self,
+        item_id: int,
+        payload: VisibilityUpdateRequest,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        user_id = self._get_current_user_id(authorization)
+        return self._service.set_item_visibility(user_id, item_id, payload)
 
     def get_categories(self, authorization: str | None = Header(default=None)) -> list[dict[str, Any]]:
         user_id = self._get_current_user_id(authorization)
@@ -127,6 +196,14 @@ class VaultController:
         user_id = self._get_current_user_id(authorization)
         return self._service.add_wishlist(user_id, payload)
 
+    def add_item_to_wishlist(self, item_id: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        user_id = self._get_current_user_id(authorization)
+        return self._service.add_item_to_wishlist(user_id, item_id)
+
+    def delete_item_from_wishlist(self, item_id: int, authorization: str | None = Header(default=None)) -> dict[str, bool]:
+        user_id = self._get_current_user_id(authorization)
+        return self._service.delete_item_from_wishlist(user_id, item_id)
+
     def delete_wishlist(self, wishlist_id: int, authorization: str | None = Header(default=None)) -> dict[str, bool]:
         user_id = self._get_current_user_id(authorization)
         return self._service.delete_wishlist(user_id, wishlist_id)
@@ -140,6 +217,35 @@ class VaultController:
     ) -> list[dict[str, Any]]:
         user_id = self._get_current_user_id(authorization)
         return self._service.report_collection(user_id, collectionId, fromDate, toDate)
+
+    def report_summary(self, period: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        user_id = self._get_current_user_id(authorization)
+        return self._service.report_summary(user_id, period)
+
+    def report_summary_csv(self, period: str, authorization: str | None = Header(default=None)) -> Response:
+        user_id = self._get_current_user_id(authorization)
+        csv_data = self._service.report_summary_csv(user_id, period)
+        return Response(content=csv_data, media_type="text/csv")
+
+    def report_collections_csv(
+        self,
+        fromDate: datetime,
+        toDate: datetime,
+        authorization: str | None = Header(default=None),
+    ) -> Response:
+        user_id = self._get_current_user_id(authorization)
+        csv_data = self._service.report_collections_csv(user_id, fromDate, toDate)
+        return Response(content=csv_data, media_type="text/csv")
+
+    def report_items_csv(
+        self,
+        fromDate: datetime,
+        toDate: datetime,
+        authorization: str | None = Header(default=None),
+    ) -> Response:
+        user_id = self._get_current_user_id(authorization)
+        csv_data = self._service.report_items_csv(user_id, fromDate, toDate)
+        return Response(content=csv_data, media_type="text/csv")
 
     def report_item(self, itemId: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         user_id = self._get_current_user_id(authorization)
@@ -156,6 +262,26 @@ class VaultController:
     def create_comment(self, payload: CommentCreateRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         user_id = self._get_current_user_id(authorization)
         return self._service.create_comment(user_id, payload)
+
+    def create_item_like(self, item_id: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        user_id = self._get_current_user_id(authorization)
+        return self._service.create_item_like(user_id, item_id)
+
+    def delete_item_like(self, item_id: int, authorization: str | None = Header(default=None)) -> dict[str, bool]:
+        user_id = self._get_current_user_id(authorization)
+        return self._service.delete_item_like(user_id, item_id)
+
+    def create_item_comment(
+        self,
+        item_id: int,
+        payload: ItemCommentCreateRequest,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        user_id = self._get_current_user_id(authorization)
+        return self._service.create_item_comment(user_id, item_id, payload.text)
+
+    def get_item_comments(self, item_id: int) -> list[dict[str, Any]]:
+        return self._service.get_item_comments(item_id)
 
     def get_comments(self, entity_type: str, entity_id: int) -> list[dict[str, Any]]:
         return self._service.get_comments(entity_type, entity_id)

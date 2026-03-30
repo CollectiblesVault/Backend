@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.health_router import HealthController
 from app.api.vault_router import VaultController
@@ -37,6 +38,14 @@ class AppFactory:
             docs_url=f"{prefix}/docs",
             redoc_url=f"{prefix}/redoc",
             openapi_url=f"{prefix}/openapi.json",
+        )
+
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
         )
 
         health_controller = HealthController(database=self._database)

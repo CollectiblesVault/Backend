@@ -553,6 +553,34 @@ class VaultRepository:
                 )
                 return cursor.rowcount > 0
 
+    def item_exists(self, item_id: int) -> bool:
+        row = self._fetch_one("SELECT 1 AS ok FROM items WHERE id = %s", (item_id,))
+        return bool(row)
+
+    def get_item_like_snapshot(self, item_id: int, user_id: int | None) -> dict[str, Any]:
+        count_row = self._fetch_one(
+            """
+            SELECT COUNT(*)::int AS likes_count
+            FROM likes
+            WHERE entity_type = 'item' AND entity_id = %s
+            """,
+            (item_id,),
+        )
+        likes_count = int((count_row or {}).get("likes_count") or 0)
+        liked_by_me = False
+        if user_id is not None:
+            liked_row = self._fetch_one(
+                """
+                SELECT 1 AS ok
+                FROM likes
+                WHERE user_id = %s AND entity_type = 'item' AND entity_id = %s
+                LIMIT 1
+                """,
+                (user_id, item_id),
+            )
+            liked_by_me = bool(liked_row)
+        return {"likes_count": likes_count, "liked_by_me": liked_by_me}
+
     def create_comment(self, user_id: int, entity_type: str, entity_id: int, text: str) -> dict[str, Any]:
         return self._fetch_one(
             """

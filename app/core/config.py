@@ -16,4 +16,6 @@ class Settings:
         self.jwt_secret: str = os.getenv("JWT_SECRET", "change_me_in_production")
         self.jwt_algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")
         self.jwt_exp_minutes: int = int(os.getenv("JWT_EXP_MINUTES", "60"))
+        self.upload_dir: str = os.getenv("UPLOAD_DIR", "uploads")
+        self.public_base_url: str | None = (os.getenv("PUBLIC_BASE_URL") or "").strip() or None
 

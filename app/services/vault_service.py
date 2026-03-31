@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 import base64
+import uuid
 from csv import DictWriter
 from datetime import datetime, timedelta, timezone
 from io import StringIO
+from pathlib import Path
 from typing import Any
 from decimal import Decimal
 
@@ -32,10 +34,32 @@ from app.schemas import (
 logger = logging.getLogger(__name__)
 
 
+_CONTENT_TYPE_TO_EXT: dict[str, str] = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/heic": ".heic",
+    "image/heif": ".heif",
+}
+
+
 class VaultService:
-    def __init__(self, repository: VaultRepository, security_manager: SecurityManager) -> None:
+    def __init__(
+        self,
+        repository: VaultRepository,
+        security_manager: SecurityManager,
+        *,
+        upload_dir: str | None = None,
+        api_prefix: str = "/api",
+        public_base_url: str | None = None,
+    ) -> None:
         self._repository = repository
         self._security_manager = security_manager
+        self._upload_dir = Path(upload_dir or "uploads").resolve()
+        self._api_prefix = (api_prefix or "/api").rstrip("/") or "/api"
+        self._public_base_url = public_base_url.rstrip("/") if public_base_url else None
 
     def register(self, payload: RegisterRequest) -> dict[str, Any]:
         existing_user = self._repository.get_user_by_email(payload.email)
@@ -292,6 +316,19 @@ class VaultService:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unable to like this item")
         return like
 
+    def get_item_like_status(self, user_id: int | None, item_id: int) -> dict[str, Any]:
+        if not self._repository.item_exists(item_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
+        snap = self._repository.get_item_like_snapshot(item_id, user_id)
+        liked = bool(snap.get("liked_by_me"))
+        count = int(snap.get("likes_count") or 0)
+        return {
+            "liked_by_me": liked,
+            "likes_count": count,
+            "likedByMe": liked,
+            "likesCount": count,
+        }
+
     def delete_item_like(self, user_id: int, item_id: int) -> dict[str, bool]:
         deleted = self._repository.delete_item_like(user_id, item_id)
         if not deleted:
@@ -402,6 +439,32 @@ class VaultService:
         if not row:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
         return {"avatar_url": str(row.get("avatar_url") or "")}
+
+    def upload_image_file(self, file_content: bytes, filename: str | None, content_type: str | None) -> dict[str, Any]:
+        if not file_content:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is empty")
+        raw_ct = (content_type or "").split(";")[0].strip().lower()
+        if not raw_ct.startswith("image/"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File must be an image")
+        ext = _CONTENT_TYPE_TO_EXT.get(raw_ct)
+        if not ext:
+            suffix = Path(filename or "").suffix.lower()
+            if suffix in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif"}:
+                ext = ".jpg" if suffix == ".jpeg" else suffix
+            else:
+                ext = ".jpg"
+        self._upload_dir.mkdir(parents=True, exist_ok=True)
+        stored_name = f"{uuid.uuid4().hex}{ext}"
+        stored_path = self._upload_dir / stored_name
+        stored_path.write_bytes(file_content)
+        relative_path = f"{self._api_prefix}/uploads/{stored_name}"
+        primary_url = f"{self._public_base_url}{relative_path}" if self._public_base_url else relative_path
+        return {
+            "url": primary_url,
+            "image_url": primary_url,
+            "imageUrl": primary_url,
+            "path": relative_path,
+        }
 
     def report_collection(self, user_id: int, collection_id: int, from_date: datetime, to_date: datetime) -> list[dict[str, Any]]:
         return self._repository.report_collection(user_id, collection_id, from_date, to_date)

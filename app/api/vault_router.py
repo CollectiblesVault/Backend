@@ -41,12 +41,19 @@ class VaultController:
         token = self._extract_token(authorization)
         return self._service.get_user_id_from_token(token)
 
+    def _get_optional_user_id(self, authorization: str | None) -> int | None:
+        if not authorization or not authorization.startswith("Bearer "):
+            return None
+        token = authorization.removeprefix("Bearer ").strip()
+        return self._service.get_user_id_from_token(token)
+
     def _register_routes(self) -> None:
         self.router.add_api_route("/register", self.register, methods=["POST"], tags=["auth"])
         self.router.add_api_route("/login", self.login, methods=["POST"], tags=["auth"])
         self.router.add_api_route("/auth/me", self.auth_me, methods=["GET"], tags=["auth"])
         self.router.add_api_route("/auth/me", self.update_me, methods=["PATCH"], tags=["auth"])
         self.router.add_api_route("/auth/me/avatar", self.update_my_avatar, methods=["POST"], tags=["auth"])
+        self.router.add_api_route("/upload", self.upload_image, methods=["POST"], tags=["upload"])
         self.router.add_api_route("/auth/me/password", self.change_password, methods=["POST"], tags=["auth"])
         self.router.add_api_route("/auth/me/deactivate", self.deactivate_me, methods=["PATCH"], tags=["auth"])
         self.router.add_api_route("/users", self.get_public_users, methods=["GET"], tags=["users"])
@@ -64,6 +71,7 @@ class VaultController:
         self.router.add_api_route("/items/{item_id}", self.update_item, methods=["PUT"], tags=["items"])
         self.router.add_api_route("/items/{item_id}", self.delete_item, methods=["DELETE"], tags=["items"])
         self.router.add_api_route("/items/{item_id}/visibility", self.set_item_visibility, methods=["PATCH"], tags=["items"])
+        self.router.add_api_route("/items/{item_id}/like", self.get_item_like_status, methods=["GET"], tags=["social"])
         self.router.add_api_route("/items/{item_id}/like", self.create_item_like, methods=["POST"], tags=["social"])
         self.router.add_api_route("/items/{item_id}/like", self.delete_item_like, methods=["DELETE"], tags=["social"])
         self.router.add_api_route("/items/{item_id}/comments", self.create_item_comment, methods=["POST"], tags=["social"])
@@ -113,6 +121,10 @@ class VaultController:
         user_id = self._get_current_user_id(authorization)
         content = await file.read()
         return self._service.update_my_avatar(user_id, file.filename, file.content_type, content)
+
+    async def upload_image(self, file: UploadFile = File(...)) -> dict[str, Any]:
+        content = await file.read()
+        return self._service.upload_image_file(content, file.filename, file.content_type)
 
     def change_password(
         self,
@@ -300,6 +312,10 @@ class VaultController:
     def create_comment(self, payload: CommentCreateRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         user_id = self._get_current_user_id(authorization)
         return self._service.create_comment(user_id, payload)
+
+    def get_item_like_status(self, item_id: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        user_id = self._get_optional_user_id(authorization)
+        return self._service.get_item_like_status(user_id, item_id)
 
     def create_item_like(self, item_id: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         user_id = self._get_current_user_id(authorization)

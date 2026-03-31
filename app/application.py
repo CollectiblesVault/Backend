@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.health_router import HealthController
 from app.api.vault_router import VaultController
@@ -21,7 +23,13 @@ class AppFactory:
         self._database = Database(database_url=self._settings.database_url)
         self._security_manager = SecurityManager(settings=settings)
         self._repository = VaultRepository(database=self._database)
-        self._service = VaultService(repository=self._repository, security_manager=self._security_manager)
+        self._service = VaultService(
+            repository=self._repository,
+            security_manager=self._security_manager,
+            upload_dir=self._settings.upload_dir,
+            api_prefix=self._settings.api_prefix,
+            public_base_url=self._settings.public_base_url,
+        )
 
     def create_app(self) -> FastAPI:
         @asynccontextmanager
@@ -52,6 +60,11 @@ class AppFactory:
         vault_controller = VaultController(service=self._service)
         app.include_router(health_controller.router, prefix=prefix)
         app.include_router(vault_controller.router, prefix=prefix)
+
+        upload_dir = Path(self._settings.upload_dir).resolve()
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        app.mount(f"{prefix}/uploads", StaticFiles(directory=str(upload_dir)), name="uploads")
+
         return app
 
 

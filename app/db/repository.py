@@ -607,3 +607,105 @@ class VaultRepository:
             """,
             (user_id, from_date, to_date),
         )
+
+    def report_activity(self, user_id: int, from_date: datetime, to_date: datetime, bucket: str) -> list[dict[str, Any]]:
+        """
+        bucket: 'day' | 'week' | 'month' - controls date_trunc and generate_series step
+        """
+        step = {"day": "1 day", "week": "1 week", "month": "1 month"}.get(bucket, "1 day")
+        return self._fetch_all(
+            f"""
+            WITH buckets AS (
+                SELECT generate_series(
+                    date_trunc(%s, %s::timestamp),
+                    date_trunc(%s, %s::timestamp),
+                    %s::interval
+                ) AS bucket_start
+            ),
+            user_collections AS (
+                SELECT id, user_id, created_at FROM collections WHERE user_id = %s
+            ),
+            user_items AS (
+                SELECT i.id, i.collection_id, i.price, i.created_at
+                FROM items i
+                JOIN user_collections c ON c.id = i.collection_id
+            ),
+            bucket_items AS (
+                SELECT date_trunc(%s, created_at) AS bucket_start,
+                       COUNT(*) AS items_count,
+                       COALESCE(SUM(price), 0) AS items_total_price
+                FROM user_items
+                WHERE created_at BETWEEN %s AND %s
+                GROUP BY 1
+            ),
+            bucket_collections AS (
+                SELECT date_trunc(%s, created_at) AS bucket_start,
+                       COUNT(*) AS collections_count
+                FROM user_collections
+                WHERE created_at BETWEEN %s AND %s
+                GROUP BY 1
+            ),
+            bucket_likes AS (
+                SELECT date_trunc(%s, created_at) AS bucket_start,
+                       COUNT(*) AS likes_count
+                FROM likes
+                WHERE user_id = %s AND created_at BETWEEN %s AND %s
+                GROUP BY 1
+            ),
+            bucket_comments AS (
+                SELECT date_trunc(%s, created_at) AS bucket_start,
+                       COUNT(*) AS comments_count
+                FROM comments
+                WHERE user_id = %s AND created_at BETWEEN %s AND %s
+                GROUP BY 1
+            ),
+            bucket_wishlist AS (
+                SELECT date_trunc(%s, created_at) AS bucket_start,
+                       COUNT(*) AS wishlist_count
+                FROM wishlists
+                WHERE user_id = %s AND created_at BETWEEN %s AND %s
+                GROUP BY 1
+            )
+            SELECT
+                b.bucket_start,
+                COALESCE(i.items_count, 0) AS items_count,
+                COALESCE(i.items_total_price, 0) AS items_total_price,
+                COALESCE(c.collections_count, 0) AS collections_count,
+                COALESCE(l.likes_count, 0) AS likes_count,
+                COALESCE(cm.comments_count, 0) AS comments_count,
+                COALESCE(w.wishlist_count, 0) AS wishlist_count
+            FROM buckets b
+            LEFT JOIN bucket_items i ON i.bucket_start = b.bucket_start
+            LEFT JOIN bucket_collections c ON c.bucket_start = b.bucket_start
+            LEFT JOIN bucket_likes l ON l.bucket_start = b.bucket_start
+            LEFT JOIN bucket_comments cm ON cm.bucket_start = b.bucket_start
+            LEFT JOIN bucket_wishlist w ON w.bucket_start = b.bucket_start
+            ORDER BY b.bucket_start
+            """,
+            (
+                bucket,
+                from_date,
+                bucket,
+                to_date,
+                step,
+                user_id,
+                bucket,
+                from_date,
+                to_date,
+                bucket,
+                from_date,
+                to_date,
+                bucket,
+                user_id,
+                from_date,
+                to_date,
+                bucket,
+                user_id,
+                from_date,
+                to_date,
+                bucket,
+                user_id,
+                from_date,
+                to_date,
+            ),
+        )

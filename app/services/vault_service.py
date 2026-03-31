@@ -5,6 +5,7 @@ from csv import DictWriter
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 from typing import Any
+from decimal import Decimal
 
 from fastapi import HTTPException, status
 from psycopg import IntegrityError
@@ -82,10 +83,7 @@ class VaultService:
         return int(payload["sub"])
 
     def auth_me(self, user_id: int) -> dict[str, Any]:
-        user = self._repository.get_user_by_id(user_id)
-        if not user:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-        return user
+        return self._get_user_with_assets(user_id)
 
     def update_me(self, user_id: int, payload: ProfileUpdateRequest) -> dict[str, Any]:
         if payload.email:
@@ -136,7 +134,7 @@ class VaultService:
         user = self._repository.get_public_user_by_id(user_id)
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-        return user
+        return self._get_public_user_with_assets(user_id, base_user=user)
 
     def get_collections(self, user_id: int) -> list[dict[str, Any]]:
         return self._repository.get_collections(user_id)
@@ -336,6 +334,36 @@ class VaultService:
     def report_items(self, user_id: int, from_date: datetime, to_date: datetime) -> list[dict[str, Any]]:
         return self._repository.report_items_period(user_id, from_date, to_date)
 
+    def report_activity(self, user_id: int, period: str) -> dict[str, Any]:
+        from_date, to_date = self._period_bounds(period)
+        bucket = self._granularity_for_period(period)
+        timeseries = self._repository.report_activity(user_id, from_date, to_date, bucket)
+        distribution = {
+            "collections": sum(int(r.get("collections_count", 0) or 0) for r in timeseries),
+            "items": sum(int(r.get("items_count", 0) or 0) for r in timeseries),
+            "likes": sum(int(r.get("likes_count", 0) or 0) for r in timeseries),
+            "comments": sum(int(r.get("comments_count", 0) or 0) for r in timeseries),
+            "wishlist": sum(int(r.get("wishlist_count", 0) or 0) for r in timeseries),
+        }
+        return {
+            "period": period,
+            "from_date": from_date,
+            "to_date": to_date,
+            "bucket": bucket,
+            "timeseries": timeseries,
+            "distribution": distribution,
+        }
+
+    @staticmethod
+    def _granularity_for_period(period: str) -> str:
+        if period == "week":
+            return "day"
+        if period == "month":
+            return "week"
+        if period == "year":
+            return "month"
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="period must be week, month or year")
+
     def _period_bounds(self, period: str) -> tuple[datetime, datetime]:
         now = datetime.now(timezone.utc)
         days = {"week": 7, "month": 30, "year": 365}.get(period)
@@ -352,3 +380,43 @@ class VaultService:
         writer.writeheader()
         writer.writerows(rows)
         return output.getvalue()
+
+    # Aggregation helpers
+    def _get_user_with_assets(self, user_id: int, base_user: dict[str, Any] | None = None) -> dict[str, Any]:
+        user = base_user or self._repository.get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        collections = self._repository.get_collections(user_id)
+        items = self._repository.get_items(user_id)
+        total = Decimal("0")
+        for item in items:
+            price = item.get("price")
+            if price is None:
+                continue
+            total += Decimal(str(price))
+        enriched = dict(user)
+        enriched["collections"] = collections
+        enriched["items"] = items
+        enriched["dollars"] = float(total)
+        return enriched
+
+    def _get_public_user_with_assets(self, user_id: int, base_user: dict[str, Any] | None = None) -> dict[str, Any]:
+        user = base_user or self._repository.get_public_user_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        collections = self._repository.get_public_collections_by_user(user_id)
+        items: list[dict[str, Any]] = []
+        for col in collections:
+            cid = int(col["id"])
+            items.extend(self._repository.get_public_items_by_collection(cid))
+        total = Decimal("0")
+        for item in items:
+            price = item.get("price")
+            if price is None:
+                continue
+            total += Decimal(str(price))
+        enriched = dict(user)
+        enriched["collections"] = collections
+        enriched["items"] = items
+        enriched["dollars"] = float(total)
+        return enriched

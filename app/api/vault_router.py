@@ -79,6 +79,7 @@ class VaultController:
         self.router.add_api_route("/reports/items.csv", self.report_items_csv, methods=["GET"], tags=["reports"])
         self.router.add_api_route("/reports/collections", self.report_collections, methods=["GET"], tags=["reports"])
         self.router.add_api_route("/reports/items", self.report_items, methods=["GET"], tags=["reports"])
+        self.router.add_api_route("/reports/activity", self.report_activity, methods=["GET"], tags=["reports"])
         self.router.add_api_route("/reports/collection", self.report_collection, methods=["GET"], tags=["reports"])
         self.router.add_api_route("/reports/item", self.report_item, methods=["GET"], tags=["reports"])
         self.router.add_api_route("/reports/category", self.report_category, methods=["GET"], tags=["reports"])
@@ -266,6 +267,10 @@ class VaultController:
     ) -> list[dict[str, Any]]:
         user_id = self._get_current_user_id(authorization)
         return self._service.report_items(user_id, fromDate, toDate)
+
+    def report_activity(self, period: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        user_id = self._get_current_user_id(authorization)
+        return self._service.report_activity(user_id, period)
 
     def report_item(self, itemId: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         user_id = self._get_current_user_id(authorization)

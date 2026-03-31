@@ -686,6 +686,25 @@ class VaultRepository:
         """
         return self._fetch_all(query, (user_id,))
 
+    def report_category_period(self, user_id: int, from_date: datetime, to_date: datetime) -> list[dict[str, Any]]:
+        # Counts items per category within the selected period.
+        return self._fetch_all(
+            """
+            SELECT
+                cat.id AS category_id,
+                cat.name AS category_name,
+                COUNT(i.id) AS items_count
+            FROM categories cat
+            LEFT JOIN items i
+                ON i.category_id = cat.id
+                AND i.created_at BETWEEN %s AND %s
+            WHERE cat.user_id = %s
+            GROUP BY cat.id, cat.name
+            ORDER BY items_count DESC, cat.name ASC
+            """,
+            (from_date, to_date, user_id),
+        )
+
     def report_summary(self, user_id: int, from_date: datetime, to_date: datetime) -> dict[str, Any]:
         return self._fetch_one(
             """

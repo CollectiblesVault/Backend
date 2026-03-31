@@ -371,7 +371,7 @@ class VaultService:
         if period == "week":
             weekday_labels = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
             # series already ordered; map each to label by weekday (Mon=0)
-            for row in series:
+            for row in series[:7]:
                 dt = row["bucket_start"]
                 # psycopg returns datetime; Monday is 0
                 label = weekday_labels[dt.weekday()]
@@ -386,11 +386,11 @@ class VaultService:
                     }
                 )
         elif period == "month":
-            # Label as Нед. 1..n
-            for idx, row in enumerate(series, start=1):
+            # Exactly 30 day buckets
+            for idx, row in enumerate(series[:30], start=1):
                 buckets.append(
                     {
-                        "label": f"Нед. {idx}",
+                        "label": f"День {idx}",
                         "collectionsDelta": int(row.get("collections_count") or 0),
                         "itemsDelta": int(row.get("items_count") or 0),
                         "likesDelta": int(row.get("likes_count") or 0),
@@ -400,7 +400,7 @@ class VaultService:
                 )
         elif period == "year":
             month_labels = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"]
-            for row in series:
+            for row in series[:12]:
                 dt = row["bucket_start"]
                 label = month_labels[dt.month - 1]
                 buckets.append(
@@ -428,7 +428,7 @@ class VaultService:
         }
 
         # Categories donut data (counts per category)
-        categories_rows = self._repository.report_category(user_id, sort_by="items_count")
+        categories_rows = self._repository.report_category_period(user_id, from_date, to_date)
         categories = [{"label": r.get("category_name"), "value": int(r.get("items_count") or 0)} for r in categories_rows]
 
         return {"period": period, "buckets": buckets, "totals": totals, "categories": categories}
@@ -482,17 +482,36 @@ class VaultService:
         if period == "week":
             return "day"
         if period == "month":
-            return "week"
+            return "day"
         if period == "year":
             return "month"
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="period must be week, month or year")
 
     def _period_bounds(self, period: str) -> tuple[datetime, datetime]:
-        now = datetime.now(timezone.utc)
-        days = {"week": 7, "month": 30, "year": 365}.get(period)
-        if not days:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="period must be week, month or year")
-        return now.replace(microsecond=0) - timedelta(days=days), now.replace(microsecond=0)
+        """
+        Produce bounds so that:
+        - week => exactly 7 day buckets (including the day of `to_date`)
+        - month => exactly 30 day buckets
+        - year => exactly 12 month buckets
+        """
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        if period == "week":
+            return now - timedelta(days=6), now
+        if period == "month":
+            return now - timedelta(days=29), now
+        if period == "year":
+            # 12 calendar months including current month
+            this_month_start = now.replace(day=1, hour=0, minute=0, second=0)
+            # Shift back 11 months to get exactly 12 buckets (inclusive of current month).
+            y = this_month_start.year
+            m = this_month_start.month
+            delta_months = -11
+            new_m0 = (m - 1) + delta_months
+            new_y = y + new_m0 // 12
+            new_m = (new_m0 % 12) + 1
+            from_date = this_month_start.replace(year=new_y, month=new_m)
+            return from_date, now
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="period must be week, month or year")
 
     @staticmethod
     def _rows_to_csv(rows: list[dict[str, Any]]) -> str:

@@ -123,6 +123,110 @@ class VaultRepository:
             (limit, offset),
         )
 
+    def get_public_users_aggregate(self, limit: int, offset: int) -> list[dict[str, Any]]:
+        return self._fetch_all(
+            """
+            WITH base AS (
+                SELECT id, display_name, bio, avatar_url
+                FROM users
+                WHERE is_active = TRUE AND is_public = TRUE
+                ORDER BY id
+                LIMIT %s OFFSET %s
+            ),
+            collections_count AS (
+                SELECT user_id, COUNT(*) AS collections_count
+                FROM collections
+                GROUP BY user_id
+            ),
+            items_agg AS (
+                SELECT c.user_id, COUNT(i.id) AS items_count, COALESCE(SUM(i.price), 0) AS total_value_usd
+                FROM collections c
+                LEFT JOIN items i ON i.collection_id = c.id
+                GROUP BY c.user_id
+            )
+            SELECT
+                b.id,
+                b.display_name,
+                b.bio,
+                b.avatar_url,
+                COALESCE(cc.collections_count, 0) AS collections_count,
+                COALESCE(ia.items_count, 0) AS items_count,
+                COALESCE(ia.total_value_usd, 0) AS total_value_usd
+            FROM base b
+            LEFT JOIN collections_count cc ON cc.user_id = b.id
+            LEFT JOIN items_agg ia ON ia.user_id = b.id
+            ORDER BY b.id
+            """,
+            (limit, offset),
+        )
+
+    def get_public_user_aggregate(self, user_id: int) -> dict[str, Any] | None:
+        return self._fetch_one(
+            """
+            WITH u AS (
+                SELECT id, display_name, bio, avatar_url
+                FROM users
+                WHERE id = %s AND is_active = TRUE AND is_public = TRUE
+            ),
+            collections_count AS (
+                SELECT user_id, COUNT(*) AS collections_count
+                FROM collections
+                WHERE user_id = %s
+                GROUP BY user_id
+            ),
+            items_agg AS (
+                SELECT c.user_id, COUNT(i.id) AS items_count, COALESCE(SUM(i.price), 0) AS total_value_usd
+                FROM collections c
+                LEFT JOIN items i ON i.collection_id = c.id
+                WHERE c.user_id = %s
+                GROUP BY c.user_id
+            )
+            SELECT
+                u.id,
+                u.display_name,
+                u.bio,
+                u.avatar_url,
+                COALESCE(cc.collections_count, 0) AS collections_count,
+                COALESCE(ia.items_count, 0) AS items_count,
+                COALESCE(ia.total_value_usd, 0) AS total_value_usd
+            FROM u
+            LEFT JOIN collections_count cc ON cc.user_id = u.id
+            LEFT JOIN items_agg ia ON ia.user_id = u.id
+            """,
+            (user_id, user_id, user_id),
+        )
+
+    def get_public_collections_aggregate_by_user(self, user_id: int) -> list[dict[str, Any]]:
+        return self._fetch_all(
+            """
+            WITH items_agg AS (
+                SELECT i.collection_id, COUNT(i.id) AS items_count, COALESCE(SUM(i.price), 0) AS total_value_usd,
+                       MAX(i.created_at) AS last_item_at
+                FROM items i
+                GROUP BY i.collection_id
+            ),
+            cover AS (
+                SELECT DISTINCT ON (i.collection_id) i.collection_id, i.image_url
+                FROM items i
+                WHERE i.image_url IS NOT NULL
+                ORDER BY i.collection_id, i.created_at DESC
+            )
+            SELECT
+                c.id,
+                c.name,
+                c.description,
+                COALESCE(ia.items_count, 0) AS items_count,
+                COALESCE(ia.total_value_usd, 0) AS total_value_usd,
+                cover.image_url
+            FROM collections c
+            LEFT JOIN items_agg ia ON ia.collection_id = c.id
+            LEFT JOIN cover ON cover.collection_id = c.id
+            WHERE c.user_id = %s AND c.is_public = TRUE
+            ORDER BY c.id
+            """,
+            (user_id,),
+        )
+
     def get_public_user_by_id(self, user_id: int) -> dict[str, Any] | None:
         return self._fetch_one(
             """
@@ -331,6 +435,24 @@ class VaultRepository:
 
     def get_wishlist(self, user_id: int) -> list[dict[str, Any]]:
         return self._fetch_all("SELECT id, user_id, item_name, item_id, created_at FROM wishlists WHERE user_id = %s", (user_id,))
+
+    def get_wishlist_detailed(self, user_id: int) -> list[dict[str, Any]]:
+        return self._fetch_all(
+            """
+            SELECT
+                w.item_id,
+                w.item_name,
+                i.image_url,
+                i.price AS estimated_price,
+                cat.name AS category_name
+            FROM wishlists w
+            LEFT JOIN items i ON i.id = w.item_id
+            LEFT JOIN categories cat ON cat.id = i.category_id
+            WHERE w.user_id = %s
+            ORDER BY w.created_at DESC
+            """,
+            (user_id,),
+        )
 
     def add_wishlist(self, user_id: int, item_name: str | None, item_id: int | None) -> dict[str, Any]:
         return self._fetch_one(
@@ -607,6 +729,59 @@ class VaultRepository:
             """,
             (user_id, from_date, to_date),
         )
+
+    def recent_events(self, user_id: int, from_date: datetime, to_date: datetime, limit: int = 100) -> list[dict[str, Any]]:
+        return self._fetch_all(
+            """
+            SELECT
+                ce.entity_type,
+                ce.action,
+                ce.entity_id,
+                ce.created_at,
+                CASE
+                    WHEN ce.entity_type = 'item' THEN (SELECT name FROM items WHERE id = ce.entity_id)
+                    WHEN ce.entity_type = 'collection' THEN (SELECT name FROM collections WHERE id = ce.entity_id)
+                    ELSE NULL
+                END AS entity_name
+            FROM change_events ce
+            WHERE ce.user_id = %s AND ce.created_at BETWEEN %s AND %s
+            ORDER BY ce.created_at DESC
+            LIMIT %s
+            """,
+            (user_id, from_date, to_date, limit),
+        )
+    def totals_overall(self, user_id: int) -> dict[str, Any]:
+        return self._fetch_one(
+            """
+            WITH coll AS (
+                SELECT COUNT(*) AS collections FROM collections WHERE user_id = %s
+            ),
+            items AS (
+                SELECT COUNT(i.id) AS items, COALESCE(SUM(i.price), 0) AS portfolio_usd
+                FROM items i
+                JOIN collections c ON c.id = i.collection_id
+                WHERE c.user_id = %s
+            ),
+            likes AS (
+                SELECT COUNT(*) AS likes FROM likes WHERE user_id = %s
+            ),
+            comments AS (
+                SELECT COUNT(*) AS comments FROM comments WHERE user_id = %s
+            ),
+            wishlist AS (
+                SELECT COUNT(*) AS wishlist FROM wishlists WHERE user_id = %s
+            )
+            SELECT
+                coll.collections,
+                items.items,
+                items.portfolio_usd,
+                likes.likes,
+                comments.comments,
+                wishlist.wishlist
+            FROM coll, items, likes, comments, wishlist
+            """,
+            (user_id, user_id, user_id, user_id, user_id),
+        ) or {}
 
     def report_activity(self, user_id: int, from_date: datetime, to_date: datetime, bucket: str) -> list[dict[str, Any]]:
         """

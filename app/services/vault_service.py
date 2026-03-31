@@ -51,7 +51,7 @@ class VaultService:
             uid = int(user["id"])
             self._repository.create_default_categories(uid)
             token = self._security_manager.create_access_token(str(uid))
-            return {"user": user, "access_token": token, "token_type": "bearer"}
+            return {"user": user, "access_token": token, "token_type": "bearer", "token": token}
         except IntegrityError:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already exists") from None
         except HTTPException:
@@ -74,7 +74,7 @@ class VaultService:
         if upgraded_hash:
             self._repository.update_user_password(int(user["id"]), upgraded_hash)
         token = self._security_manager.create_access_token(str(user["id"]))
-        return {"access_token": token, "token_type": "bearer"}
+        return {"access_token": token, "token_type": "bearer", "token": token}
 
     def get_user_id_from_token(self, token: str) -> int:
         payload = self._security_manager.decode_token(token)
@@ -83,7 +83,16 @@ class VaultService:
         return int(payload["sub"])
 
     def auth_me(self, user_id: int) -> dict[str, Any]:
-        return self._get_user_with_assets(user_id)
+        user = self._repository.get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        # Return only profile fields expected by mobile frontend
+        return {
+            "email": user.get("email"),
+            "display_name": user.get("display_name"),
+            "bio": user.get("bio"),
+            "avatar_url": user.get("avatar_url"),
+        }
 
     def update_me(self, user_id: int, payload: ProfileUpdateRequest) -> dict[str, Any]:
         if payload.email:
@@ -128,13 +137,41 @@ class VaultService:
         return result
 
     def get_public_users(self, limit: int, offset: int) -> list[dict[str, Any]]:
-        return self._repository.get_public_users(limit=limit, offset=offset)
+        rows = self._repository.get_public_users_aggregate(limit=limit, offset=offset)
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            uid = int(row["id"])
+            result.append(
+                {
+                    "id": uid,
+                    "display_name": row.get("display_name"),
+                    "handle": f"@user{uid}",
+                    "bio": row.get("bio"),
+                    "avatar_url": row.get("avatar_url"),
+                    "collections_count": int(row.get("collections_count") or 0),
+                    "items_count": int(row.get("items_count") or 0),
+                    "total_value_usd": float(row.get("total_value_usd") or 0),
+                    "is_self": False,
+                }
+            )
+        return result
 
     def get_public_user(self, user_id: int) -> dict[str, Any]:
-        user = self._repository.get_public_user_by_id(user_id)
-        if not user:
+        row = self._repository.get_public_user_aggregate(user_id)
+        if not row:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-        return self._get_public_user_with_assets(user_id, base_user=user)
+        uid = int(row["id"])
+        return {
+            "id": uid,
+            "display_name": row.get("display_name"),
+            "handle": f"@user{uid}",
+            "bio": row.get("bio"),
+            "avatar_url": row.get("avatar_url"),
+            "collections_count": int(row.get("collections_count") or 0),
+            "items_count": int(row.get("items_count") or 0),
+            "total_value_usd": float(row.get("total_value_usd") or 0),
+            "is_self": False,
+        }
 
     def get_collections(self, user_id: int) -> list[dict[str, Any]]:
         return self._repository.get_collections(user_id)
@@ -155,7 +192,7 @@ class VaultService:
         return {"deleted": True}
 
     def get_public_collections_by_user(self, user_id: int) -> list[dict[str, Any]]:
-        return self._repository.get_public_collections_by_user(user_id)
+        return self._repository.get_public_collections_aggregate_by_user(user_id)
 
     def set_collection_visibility(self, user_id: int, collection_id: int, payload: VisibilityUpdateRequest) -> dict[str, Any]:
         result = self._repository.set_collection_visibility(user_id, collection_id, payload.is_public)
@@ -212,7 +249,21 @@ class VaultService:
         return self._repository.create_category(user_id, name)
 
     def get_wishlist(self, user_id: int) -> list[dict[str, Any]]:
-        return self._repository.get_wishlist(user_id)
+        rows = self._repository.get_wishlist_detailed(user_id)
+        result: list[dict[str, Any]] = []
+        for r in rows:
+            result.append(
+                {
+                    "item_id": r.get("item_id"),
+                    "item_name": r.get("item_name"),
+                    "image_url": r.get("image_url"),
+                    "estimated_price": float(r.get("estimated_price") or 0),
+                    "priority": None,
+                    "notes": None,
+                    "category_name": r.get("category_name"),
+                }
+            )
+        return result
 
     def add_wishlist(self, user_id: int, payload: WishlistCreateRequest) -> dict[str, Any]:
         if not payload.item_name and not payload.item_id:
@@ -313,11 +364,74 @@ class VaultService:
 
     def report_summary(self, user_id: int, period: str) -> dict[str, Any]:
         from_date, to_date = self._period_bounds(period)
-        summary = self._repository.report_summary(user_id, from_date, to_date)
-        summary["period"] = period
-        summary["from_date"] = from_date
-        summary["to_date"] = to_date
-        return summary
+        bucket = self._granularity_for_period(period)
+        # Build buckets using activity timeseries
+        series = self._repository.report_activity(user_id, from_date, to_date, bucket)
+        buckets: list[dict[str, Any]] = []
+        if period == "week":
+            weekday_labels = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            # series already ordered; map each to label by weekday (Mon=0)
+            for row in series:
+                dt = row["bucket_start"]
+                # psycopg returns datetime; Monday is 0
+                label = weekday_labels[dt.weekday()]
+                buckets.append(
+                    {
+                        "label": label,
+                        "collectionsDelta": int(row.get("collections_count") or 0),
+                        "itemsDelta": int(row.get("items_count") or 0),
+                        "likesDelta": int(row.get("likes_count") or 0),
+                        "commentsDelta": int(row.get("comments_count") or 0),
+                        "wishlistDelta": int(row.get("wishlist_count") or 0),
+                    }
+                )
+        elif period == "month":
+            # Label as Нед. 1..n
+            for idx, row in enumerate(series, start=1):
+                buckets.append(
+                    {
+                        "label": f"Нед. {idx}",
+                        "collectionsDelta": int(row.get("collections_count") or 0),
+                        "itemsDelta": int(row.get("items_count") or 0),
+                        "likesDelta": int(row.get("likes_count") or 0),
+                        "commentsDelta": int(row.get("comments_count") or 0),
+                        "wishlistDelta": int(row.get("wishlist_count") or 0),
+                    }
+                )
+        elif period == "year":
+            month_labels = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"]
+            for row in series:
+                dt = row["bucket_start"]
+                label = month_labels[dt.month - 1]
+                buckets.append(
+                    {
+                        "label": label,
+                        "collectionsDelta": int(row.get("collections_count") or 0),
+                        "itemsDelta": int(row.get("items_count") or 0),
+                        "likesDelta": int(row.get("likes_count") or 0),
+                        "commentsDelta": int(row.get("comments_count") or 0),
+                        "wishlistDelta": int(row.get("wishlist_count") or 0),
+                    }
+                )
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="period must be week, month or year")
+
+        # Totals overall (all-time)
+        totals_row = self._repository.totals_overall(user_id)
+        totals = {
+            "collections": int(totals_row.get("collections") or 0),
+            "items": int(totals_row.get("items") or 0),
+            "likes": int(totals_row.get("likes") or 0),
+            "comments": int(totals_row.get("comments") or 0),
+            "wishlist": int(totals_row.get("wishlist") or 0),
+            "portfolioUsd": float(totals_row.get("portfolio_usd") or 0),
+        }
+
+        # Categories donut data (counts per category)
+        categories_rows = self._repository.report_category(user_id, sort_by="items_count")
+        categories = [{"label": r.get("category_name"), "value": int(r.get("items_count") or 0)} for r in categories_rows]
+
+        return {"period": period, "buckets": buckets, "totals": totals, "categories": categories}
 
     def report_summary_csv(self, user_id: int, period: str) -> str:
         return self._rows_to_csv([self.report_summary(user_id, period)])
@@ -336,23 +450,32 @@ class VaultService:
 
     def report_activity(self, user_id: int, period: str) -> dict[str, Any]:
         from_date, to_date = self._period_bounds(period)
-        bucket = self._granularity_for_period(period)
-        timeseries = self._repository.report_activity(user_id, from_date, to_date, bucket)
-        distribution = {
-            "collections": sum(int(r.get("collections_count", 0) or 0) for r in timeseries),
-            "items": sum(int(r.get("items_count", 0) or 0) for r in timeseries),
-            "likes": sum(int(r.get("likes_count", 0) or 0) for r in timeseries),
-            "comments": sum(int(r.get("comments_count", 0) or 0) for r in timeseries),
-            "wishlist": sum(int(r.get("wishlist_count", 0) or 0) for r in timeseries),
-        }
-        return {
-            "period": period,
-            "from_date": from_date,
-            "to_date": to_date,
-            "bucket": bucket,
-            "timeseries": timeseries,
-            "distribution": distribution,
-        }
+        rows = self._repository.recent_events(user_id, from_date, to_date, limit=200)
+        def map_type(entity_type: str, action: str) -> str:
+            return f"{entity_type}_{action}ed" if action.endswith("e") else f"{entity_type}_{action}d" if action not in ("like", "comment") else f"{entity_type}_{action}"
+        def map_title(entity_type: str, action: str) -> str:
+            mapping = {
+                ("item", "create"): "Создан предмет",
+                ("item", "update"): "Обновлён предмет",
+                ("item", "delete"): "Удалён предмет",
+                ("collection", "create"): "Создана коллекция",
+                ("collection", "update"): "Обновлена коллекция",
+                ("collection", "delete"): "Удалена коллекция",
+            }
+            return mapping.get((entity_type, action), "Событие")
+        events = []
+        for r in rows:
+            e_type = str(r.get("entity_type") or "")
+            action = str(r.get("action") or "")
+            events.append(
+                {
+                    "type": map_type(e_type, action),
+                    "title": map_title(e_type, action),
+                    "subtitle": r.get("entity_name"),
+                    "created_at": r.get("created_at"),
+                }
+            )
+        return {"events": events}
 
     @staticmethod
     def _granularity_for_period(period: str) -> str:

@@ -330,6 +330,12 @@ class VaultService:
     def report_items_csv(self, user_id: int, from_date: datetime, to_date: datetime) -> str:
         return self._rows_to_csv(self._repository.report_items_period(user_id, from_date, to_date))
 
+    def report_collections(self, user_id: int, from_date: datetime, to_date: datetime) -> list[dict[str, Any]]:
+        return self._repository.report_collections_period(user_id, from_date, to_date)
+
+    def report_items(self, user_id: int, from_date: datetime, to_date: datetime) -> list[dict[str, Any]]:
+        return self._repository.report_items_period(user_id, from_date, to_date)
+
     def _period_bounds(self, period: str) -> tuple[datetime, datetime]:
         now = datetime.now(timezone.utc)
         days = {"week": 7, "month": 30, "year": 365}.get(period)

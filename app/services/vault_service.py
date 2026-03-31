@@ -434,7 +434,34 @@ class VaultService:
         return {"period": period, "buckets": buckets, "totals": totals, "categories": categories}
 
     def report_summary_csv(self, user_id: int, period: str) -> str:
-        return self._rows_to_csv([self.report_summary(user_id, period)])
+        from_date, to_date = self._period_bounds(period)
+        bucket = self._granularity_for_period(period)
+        series = self._repository.report_activity(user_id, from_date, to_date, bucket)
+        metrics_map = [
+            ("collections_count", "collections"),
+            ("items_count", "items"),
+            ("likes_count", "likes"),
+            ("comments_count", "comments"),
+            ("wishlist_count", "wishlist"),
+        ]
+        rows: list[dict[str, Any]] = []
+        for row in series:
+            bucket_start = row.get("bucket_start")
+            bucket_date = (
+                bucket_start.date().isoformat()
+                if isinstance(bucket_start, datetime)
+                else str(bucket_start)
+            )
+            for source_key, metric_name in metrics_map:
+                rows.append(
+                    {
+                        "period": period,
+                        "date": bucket_date,
+                        "metric": metric_name,
+                        "value": int(row.get(source_key) or 0),
+                    }
+                )
+        return self._rows_to_csv(rows, fieldnames=["period", "date", "metric", "value"])
 
     def report_collections_csv(self, user_id: int, from_date: datetime, to_date: datetime) -> str:
         return self._rows_to_csv(self._repository.report_collections_period(user_id, from_date, to_date))
@@ -514,11 +541,12 @@ class VaultService:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="period must be week, month or year")
 
     @staticmethod
-    def _rows_to_csv(rows: list[dict[str, Any]]) -> str:
+    def _rows_to_csv(rows: list[dict[str, Any]], fieldnames: list[str] | None = None) -> str:
         if not rows:
             return ""
         output = StringIO()
-        writer = DictWriter(output, fieldnames=list(rows[0].keys()))
+        resolved_fieldnames = fieldnames or list(rows[0].keys())
+        writer = DictWriter(output, fieldnames=resolved_fieldnames)
         writer.writeheader()
         writer.writerows(rows)
         return output.getvalue()

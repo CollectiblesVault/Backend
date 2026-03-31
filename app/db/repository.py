@@ -465,16 +465,30 @@ class VaultRepository:
         ) or {}
 
     def add_item_to_wishlist(self, user_id: int, item_id: int) -> dict[str, Any] | None:
-        return self._fetch_one(
+        created = self._fetch_one(
             """
             INSERT INTO wishlists (user_id, item_name, item_id)
             SELECT %s, i.name, i.id
             FROM items i
             JOIN collections c ON c.id = i.collection_id
             JOIN users u ON u.id = c.user_id
-            WHERE i.id = %s AND c.is_public = TRUE AND u.is_active = TRUE AND u.is_public = TRUE
+            WHERE i.id = %s
+              AND (
+                (c.is_public = TRUE AND u.is_active = TRUE AND u.is_public = TRUE)
+                OR c.user_id = %s
+              )
             ON CONFLICT DO NOTHING
             RETURNING id, user_id, item_name, item_id, created_at
+            """,
+            (user_id, item_id, user_id),
+        )
+        if created:
+            return created
+        return self._fetch_one(
+            """
+            SELECT id, user_id, item_name, item_id, created_at
+            FROM wishlists
+            WHERE user_id = %s AND item_id = %s
             """,
             (user_id, item_id),
         )
@@ -502,16 +516,30 @@ class VaultRepository:
         ) or {}
 
     def create_item_like(self, user_id: int, item_id: int) -> dict[str, Any] | None:
-        return self._fetch_one(
+        created = self._fetch_one(
             """
             INSERT INTO likes (user_id, entity_type, entity_id)
             SELECT %s, 'item', i.id
             FROM items i
             JOIN collections c ON c.id = i.collection_id
             JOIN users u ON u.id = c.user_id
-            WHERE i.id = %s AND c.is_public = TRUE AND u.is_active = TRUE AND u.is_public = TRUE
+            WHERE i.id = %s
+              AND (
+                (c.is_public = TRUE AND u.is_active = TRUE AND u.is_public = TRUE)
+                OR c.user_id = %s
+              )
             ON CONFLICT DO NOTHING
             RETURNING id, user_id, entity_type, entity_id, created_at
+            """,
+            (user_id, item_id, user_id),
+        )
+        if created:
+            return created
+        return self._fetch_one(
+            """
+            SELECT id, user_id, entity_type, entity_id, created_at
+            FROM likes
+            WHERE user_id = %s AND entity_type = 'item' AND entity_id = %s
             """,
             (user_id, item_id),
         )
@@ -554,10 +582,14 @@ class VaultRepository:
             FROM items i
             JOIN collections c ON c.id = i.collection_id
             JOIN users u ON u.id = c.user_id
-            WHERE i.id = %s AND c.is_public = TRUE AND u.is_active = TRUE AND u.is_public = TRUE
+            WHERE i.id = %s
+              AND (
+                (c.is_public = TRUE AND u.is_active = TRUE AND u.is_public = TRUE)
+                OR c.user_id = %s
+              )
             RETURNING id, user_id, entity_type, entity_id, text, created_at
             """,
-            (user_id, text, item_id),
+            (user_id, text, item_id, user_id),
         )
 
     def get_item_comments(self, item_id: int) -> list[dict[str, Any]]:

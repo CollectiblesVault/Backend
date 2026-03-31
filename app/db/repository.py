@@ -574,6 +574,7 @@ class VaultRepository:
     def create_lot(
         self,
         seller_id: int,
+        collection_id: int,
         name: str,
         description: str | None,
         start_price: Decimal,
@@ -582,20 +583,37 @@ class VaultRepository:
     ) -> dict[str, Any]:
         return self._fetch_one(
             """
-            INSERT INTO auction_lots (seller_id, name, description, start_price, step, end_time, status)
-            VALUES (%s, %s, %s, %s, %s, %s, 'open')
-            RETURNING id, seller_id, name, description, start_price, step, end_time, status, created_at
+            INSERT INTO auction_lots (seller_id, collection_id, name, description, start_price, step, end_time, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'open')
+            RETURNING id, seller_id, collection_id, winner_id, name, description, start_price, step, end_time, status, created_at, closed_at
             """,
-            (seller_id, name, description, start_price, step, end_time),
+            (seller_id, collection_id, name, description, start_price, step, end_time),
         ) or {}
 
     def get_lots(self) -> list[dict[str, Any]]:
         return self._fetch_all(
-            "SELECT id, seller_id, name, description, start_price, step, end_time, status, created_at FROM auction_lots ORDER BY id DESC"
+            "SELECT id, seller_id, collection_id, winner_id, name, description, start_price, step, end_time, status, created_at, closed_at FROM auction_lots ORDER BY id DESC"
         )
 
     def get_lot(self, lot_id: int) -> dict[str, Any] | None:
         return self._fetch_one("SELECT * FROM auction_lots WHERE id = %s", (lot_id,))
+
+    def get_lot_bid_history(self, lot_id: int) -> list[dict[str, Any]]:
+        return self._fetch_all(
+            """
+            SELECT
+                b.amount,
+                b.created_at,
+                b.user_id AS bidder_id,
+                COALESCE(u.display_name, CONCAT('user', u.id)) AS bidder_name,
+                u.avatar_url AS bidder_avatar
+            FROM bids b
+            JOIN users u ON u.id = b.user_id
+            WHERE b.lot_id = %s
+            ORDER BY b.created_at ASC
+            """,
+            (lot_id,),
+        )
 
     def get_top_bid(self, lot_id: int) -> dict[str, Any] | None:
         return self._fetch_one(
@@ -630,6 +648,116 @@ class VaultRepository:
                     """
                 )
                 return cursor.rowcount
+
+    def get_collection_owned_by_user(self, user_id: int, collection_id: int) -> dict[str, Any] | None:
+        return self._fetch_one(
+            """
+            SELECT id, user_id, name
+            FROM collections
+            WHERE id = %s AND user_id = %s
+            """,
+            (collection_id, user_id),
+        )
+
+    def close_lot_and_transfer(self, lot_id: int) -> dict[str, Any] | None:
+        with self._database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, seller_id, collection_id, status, end_time
+                    FROM auction_lots
+                    WHERE id = %s
+                    FOR UPDATE
+                    """,
+                    (lot_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                lot_columns = [col[0] for col in cursor.description or []]
+                lot = dict(zip(lot_columns, row, strict=False))
+                if str(lot.get("status")) != "open":
+                    cursor.execute(
+                        """
+                        SELECT id, seller_id, collection_id, winner_id, name, description, start_price, step, end_time, status, created_at, closed_at
+                        FROM auction_lots
+                        WHERE id = %s
+                        """,
+                        (lot_id,),
+                    )
+                    existing = cursor.fetchone()
+                    if not existing:
+                        return None
+                    columns = [col[0] for col in cursor.description or []]
+                    return dict(zip(columns, existing, strict=False))
+                cursor.execute(
+                    """
+                    SELECT user_id, amount
+                    FROM bids
+                    WHERE lot_id = %s
+                    ORDER BY amount DESC, created_at ASC
+                    LIMIT 1
+                    """,
+                    (lot_id,),
+                )
+                top_bid = cursor.fetchone()
+                winner_id = int(top_bid[0]) if top_bid else None
+                collection_id = lot.get("collection_id")
+                if collection_id is not None and winner_id is not None:
+                    cursor.execute(
+                        """
+                        UPDATE collections
+                        SET user_id = %s, updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (winner_id, collection_id),
+                    )
+                cursor.execute(
+                    """
+                    UPDATE auction_lots
+                    SET status = 'completed', winner_id = %s, closed_at = NOW()
+                    WHERE id = %s
+                    RETURNING id, seller_id, collection_id, winner_id, name, description, start_price, step, end_time, status, created_at, closed_at
+                    """,
+                    (winner_id, lot_id),
+                )
+                closed = cursor.fetchone()
+                if not closed:
+                    return None
+                columns = [col[0] for col in cursor.description or []]
+                return dict(zip(columns, closed, strict=False))
+
+    def get_expired_open_lot_ids(self) -> list[int]:
+        rows = self._fetch_all(
+            """
+            SELECT id
+            FROM auction_lots
+            WHERE status = 'open' AND end_time <= NOW()
+            ORDER BY id
+            """
+        )
+        return [int(row["id"]) for row in rows]
+
+    def update_user_avatar(self, user_id: int, avatar_url: str) -> dict[str, Any] | None:
+        return self._fetch_one(
+            """
+            UPDATE users
+            SET avatar_url = %s, updated_at = NOW()
+            WHERE id = %s
+            RETURNING id, avatar_url
+            """,
+            (avatar_url, user_id),
+        )
+
+    def get_public_avatar(self, user_id: int) -> dict[str, Any] | None:
+        return self._fetch_one(
+            """
+            SELECT id, avatar_url
+            FROM users
+            WHERE id = %s AND is_active = TRUE AND is_public = TRUE
+            """,
+            (user_id,),
+        )
 
     def create_change_event(
         self,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import base64
 from csv import DictWriter
 from datetime import datetime, timedelta, timezone
 from io import StringIO
@@ -321,8 +322,12 @@ class VaultService:
     def create_lot(self, user_id: int, payload: LotCreateRequest) -> dict[str, Any]:
         if payload.end_time <= datetime.now(timezone.utc):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="end_time must be in future")
+        collection = self._repository.get_collection_owned_by_user(user_id, payload.collection_id)
+        if not collection:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
         return self._repository.create_lot(
             user_id,
+            payload.collection_id,
             payload.name,
             payload.description,
             payload.start_price,
@@ -349,6 +354,54 @@ class VaultService:
                 detail=f"Bid must be at least {min_amount}",
             )
         return self._repository.create_bid(payload.lot_id, user_id, payload.amount)
+
+    def get_lot_bids(self, lot_id: int) -> list[dict[str, Any]]:
+        lot = self._repository.get_lot(lot_id)
+        if not lot:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lot not found")
+        return self._repository.get_lot_bid_history(lot_id)
+
+    def close_lot(self, lot_id: int) -> dict[str, Any]:
+        lot = self._repository.get_lot(lot_id)
+        if not lot:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lot not found")
+        if str(lot.get("status")) != "open":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Lot is already closed")
+        end_time = lot.get("end_time")
+        if isinstance(end_time, datetime) and end_time > datetime.now(timezone.utc):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Auction is not over yet")
+        closed_lot = self._repository.close_lot_and_transfer(lot_id)
+        if not closed_lot:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lot not found")
+        return closed_lot
+
+    def settle_expired_lots(self) -> dict[str, Any]:
+        lot_ids = self._repository.get_expired_open_lot_ids()
+        settled_lots: list[dict[str, Any]] = []
+        for lot_id in lot_ids:
+            closed = self._repository.close_lot_and_transfer(lot_id)
+            if closed:
+                settled_lots.append(closed)
+        return {"settled_count": len(settled_lots), "lots": settled_lots}
+
+    def update_my_avatar(self, user_id: int, filename: str | None, content_type: str | None, file_content: bytes) -> dict[str, str]:
+        if not file_content:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Avatar file is empty")
+        media_type = content_type or "application/octet-stream"
+        if not media_type.startswith("image/"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Avatar must be an image")
+        encoded = base64.b64encode(file_content).decode("ascii")
+        avatar_url = f"data:{media_type};base64,{encoded}"
+        updated = self._repository.update_user_avatar(user_id, avatar_url)
+        if not updated:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        return {"avatar_url": avatar_url}
+
+    def get_user_avatar(self, user_id: int) -> dict[str, str]:
+        row = self._repository.get_public_avatar(user_id)
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        return {"avatar_url": str(row.get("avatar_url") or "")}
 
     def report_collection(self, user_id: int, collection_id: int, from_date: datetime, to_date: datetime) -> list[dict[str, Any]]:
         return self._repository.report_collection(user_id, collection_id, from_date, to_date)

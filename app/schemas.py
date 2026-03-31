@@ -83,6 +83,7 @@ class ItemCommentCreateRequest(BaseModel):
 
 
 class LotCreateRequest(BaseModel):
+    collection_id: int
     name: str = Field(min_length=1, max_length=150)
     description: str | None = Field(default=None, max_length=1000)
     start_price: Decimal = Field(gt=0)

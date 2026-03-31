@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Query, Response, status
+from fastapi import APIRouter, File, Header, HTTPException, Query, Response, UploadFile, status
 
 from app.schemas import (
     BidCreateRequest,
@@ -46,11 +46,13 @@ class VaultController:
         self.router.add_api_route("/login", self.login, methods=["POST"], tags=["auth"])
         self.router.add_api_route("/auth/me", self.auth_me, methods=["GET"], tags=["auth"])
         self.router.add_api_route("/auth/me", self.update_me, methods=["PATCH"], tags=["auth"])
+        self.router.add_api_route("/auth/me/avatar", self.update_my_avatar, methods=["POST"], tags=["auth"])
         self.router.add_api_route("/auth/me/password", self.change_password, methods=["POST"], tags=["auth"])
         self.router.add_api_route("/auth/me/deactivate", self.deactivate_me, methods=["PATCH"], tags=["auth"])
         self.router.add_api_route("/users", self.get_public_users, methods=["GET"], tags=["users"])
         self.router.add_api_route("/users/{user_id}", self.get_public_user, methods=["GET"], tags=["users"])
         self.router.add_api_route("/users/{user_id}/collections", self.get_public_user_collections, methods=["GET"], tags=["users"])
+        self.router.add_api_route("/users/{user_id}/avatar", self.get_user_avatar, methods=["GET"], tags=["users"])
         self.router.add_api_route("/collections", self.get_collections, methods=["GET"], tags=["collections"])
         self.router.add_api_route("/collections", self.create_collection, methods=["POST"], tags=["collections"])
         self.router.add_api_route("/collections/{collection_id}", self.update_collection, methods=["PUT"], tags=["collections"])
@@ -88,6 +90,9 @@ class VaultController:
         self.router.add_api_route("/comments", self.get_comments, methods=["GET"], tags=["social"])
         self.router.add_api_route("/lot", self.create_lot, methods=["POST"], tags=["auction"])
         self.router.add_api_route("/lots", self.get_lots, methods=["GET"], tags=["auction"])
+        self.router.add_api_route("/lots/{lot_id}/bids", self.get_lot_bids, methods=["GET"], tags=["auction"])
+        self.router.add_api_route("/lots/{lot_id}/close", self.close_lot, methods=["POST"], tags=["auction"])
+        self.router.add_api_route("/lots/settle-expired", self.settle_expired_lots, methods=["POST"], tags=["auction"])
         self.router.add_api_route("/bid", self.create_bid, methods=["POST"], tags=["auction"])
 
     def register(self, payload: RegisterRequest) -> dict[str, Any]:
@@ -103,6 +108,11 @@ class VaultController:
     def update_me(self, payload: ProfileUpdateRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         user_id = self._get_current_user_id(authorization)
         return self._service.update_me(user_id, payload)
+
+    async def update_my_avatar(self, file: UploadFile = File(...), authorization: str | None = Header(default=None)) -> dict[str, str]:
+        user_id = self._get_current_user_id(authorization)
+        content = await file.read()
+        return self._service.update_my_avatar(user_id, file.filename, file.content_type, content)
 
     def change_password(
         self,
@@ -124,6 +134,9 @@ class VaultController:
 
     def get_public_user_collections(self, user_id: int) -> list[dict[str, Any]]:
         return self._service.get_public_collections_by_user(user_id)
+
+    def get_user_avatar(self, user_id: int) -> dict[str, str]:
+        return self._service.get_user_avatar(user_id)
 
     def get_collections(self, authorization: str | None = Header(default=None)) -> list[dict[str, Any]]:
         user_id = self._get_current_user_id(authorization)
@@ -317,6 +330,15 @@ class VaultController:
 
     def get_lots(self) -> list[dict[str, Any]]:
         return self._service.get_lots()
+
+    def get_lot_bids(self, lot_id: int) -> list[dict[str, Any]]:
+        return self._service.get_lot_bids(lot_id)
+
+    def close_lot(self, lot_id: int) -> dict[str, Any]:
+        return self._service.close_lot(lot_id)
+
+    def settle_expired_lots(self) -> dict[str, Any]:
+        return self._service.settle_expired_lots()
 
     def create_bid(self, payload: BidCreateRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         user_id = self._get_current_user_id(authorization)

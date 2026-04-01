@@ -65,6 +65,7 @@ class AppFactory:
         app.include_router(health_controller.router, prefix=prefix)
         app.include_router(vault_controller.router, prefix=prefix)
         upload_root = Path(self._settings.upload_dir).resolve()
+        upload_root.mkdir(parents=True, exist_ok=True)
         app.mount(
             f"{prefix}/uploads",
             StaticFiles(directory=str(upload_root)),

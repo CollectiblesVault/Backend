@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, File, Header, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, File, Header, HTTPException, Query, Request, Response, UploadFile, status
 
 from app.schemas import (
     BidCreateRequest,
@@ -27,8 +27,17 @@ from app.services.vault_service import VaultService
 
 
 class VaultController:
-    def __init__(self, service: VaultService) -> None:
+    def __init__(
+        self,
+        service: VaultService,
+        api_prefix: str,
+        public_base_url: str = "",
+        public_media_url_prefix: str = "",
+    ) -> None:
         self._service = service
+        self._api_prefix = api_prefix
+        self._public_base_url = public_base_url
+        self._public_media_url_prefix = public_media_url_prefix
         self.router = APIRouter()
         self._register_routes()
 
@@ -45,7 +54,7 @@ class VaultController:
         if not authorization or not authorization.startswith("Bearer "):
             return None
         token = authorization.removeprefix("Bearer ").strip()
-        return self._service.get_user_id_from_token(token)
+        return self._service.try_get_user_id_from_token(token)
 
     def _register_routes(self) -> None:
         self.router.add_api_route("/register", self.register, methods=["POST"], tags=["auth"])
@@ -53,7 +62,7 @@ class VaultController:
         self.router.add_api_route("/auth/me", self.auth_me, methods=["GET"], tags=["auth"])
         self.router.add_api_route("/auth/me", self.update_me, methods=["PATCH"], tags=["auth"])
         self.router.add_api_route("/auth/me/avatar", self.update_my_avatar, methods=["POST"], tags=["auth"])
-        self.router.add_api_route("/upload", self.upload_image, methods=["POST"], tags=["upload"])
+        self.router.add_api_route("/upload", self.upload_image, methods=["POST"], tags=["files"])
         self.router.add_api_route("/auth/me/password", self.change_password, methods=["POST"], tags=["auth"])
         self.router.add_api_route("/auth/me/deactivate", self.deactivate_me, methods=["PATCH"], tags=["auth"])
         self.router.add_api_route("/users", self.get_public_users, methods=["GET"], tags=["users"])
@@ -122,9 +131,24 @@ class VaultController:
         content = await file.read()
         return self._service.update_my_avatar(user_id, file.filename, file.content_type, content)
 
-    async def upload_image(self, file: UploadFile = File(...)) -> dict[str, Any]:
+    async def upload_image(
+        self,
+        request: Request,
+        file: UploadFile = File(...),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        self._get_current_user_id(authorization)
         content = await file.read()
-        return self._service.upload_image_file(content, file.filename, file.content_type)
+        request_public_base = str(request.base_url).rstrip("/")
+        return self._service.save_public_image_upload(
+            content,
+            file.filename,
+            file.content_type,
+            self._api_prefix,
+            self._public_base_url,
+            self._public_media_url_prefix,
+            request_public_base=request_public_base,
+        )
 
     def change_password(
         self,
@@ -314,8 +338,8 @@ class VaultController:
         return self._service.create_comment(user_id, payload)
 
     def get_item_like_status(self, item_id: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-        user_id = self._get_optional_user_id(authorization)
-        return self._service.get_item_like_status(user_id, item_id)
+        viewer_id = self._get_optional_user_id(authorization)
+        return self._service.get_item_like_status(viewer_id, item_id)
 
     def create_item_like(self, item_id: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         user_id = self._get_current_user_id(authorization)

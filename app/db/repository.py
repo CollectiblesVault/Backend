@@ -217,7 +217,7 @@ class VaultRepository:
                 c.description,
                 COALESCE(ia.items_count, 0) AS items_count,
                 COALESCE(ia.total_value_usd, 0) AS total_value_usd,
-                cover.image_url
+                COALESCE(c.image_url, cover.image_url) AS image_url
             FROM collections c
             LEFT JOIN items_agg ia ON ia.collection_id = c.id
             LEFT JOIN cover ON cover.collection_id = c.id
@@ -263,14 +263,14 @@ class VaultRepository:
 
     def get_collections(self, user_id: int) -> list[dict[str, Any]]:
         return self._fetch_all(
-            "SELECT id, user_id, name, description, is_public, updated_at, created_at FROM collections WHERE user_id = %s ORDER BY id",
+            "SELECT id, user_id, name, description, image_url, is_public, updated_at, created_at FROM collections WHERE user_id = %s ORDER BY id",
             (user_id,),
         )
 
     def get_public_collections_by_user(self, user_id: int) -> list[dict[str, Any]]:
         return self._fetch_all(
             """
-            SELECT c.id, c.user_id, c.name, c.description, c.is_public, c.updated_at, c.created_at
+            SELECT c.id, c.user_id, c.name, c.description, c.image_url, c.is_public, c.updated_at, c.created_at
             FROM collections c
             JOIN users u ON u.id = c.user_id
             WHERE c.user_id = %s AND c.is_public = TRUE AND u.is_active = TRUE AND u.is_public = TRUE
@@ -279,30 +279,43 @@ class VaultRepository:
             (user_id,),
         )
 
-    def create_collection(self, user_id: int, name: str, description: str | None) -> dict[str, Any]:
+    def create_collection(self, user_id: int, name: str, description: str | None, image_url: str | None = None) -> dict[str, Any]:
         result = self._fetch_one(
             """
-            INSERT INTO collections (user_id, name, description)
-            VALUES (%s, %s, %s)
-            RETURNING id, user_id, name, description, is_public, updated_at, created_at
+            INSERT INTO collections (user_id, name, description, image_url)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id, user_id, name, description, image_url, is_public, updated_at, created_at
             """,
-            (user_id, name, description),
+            (user_id, name, description, image_url),
         ) or {}
         self.create_change_event(user_id, "collection", int(result["id"]), "create", None, str(result))
         return result
 
-    def update_collection(self, user_id: int, collection_id: int, name: str, description: str | None) -> dict[str, Any] | None:
+    def update_collection(self, user_id: int, collection_id: int, patch: dict[str, Any]) -> dict[str, Any] | None:
         old_row = self._fetch_one("SELECT * FROM collections WHERE id = %s AND user_id = %s", (collection_id, user_id))
         if not old_row:
             return None
+        allowed_columns = {"name", "description", "image_url"}
+        updates = {k: patch[k] for k in allowed_columns if k in patch}
+        if not updates:
+            return self._fetch_one(
+                """
+                SELECT id, user_id, name, description, image_url, is_public, updated_at, created_at
+                FROM collections
+                WHERE id = %s AND user_id = %s
+                """,
+                (collection_id, user_id),
+            )
+        set_parts = [f"{column} = %s" for column in updates]
+        values = list(updates.values()) + [collection_id, user_id]
         updated_row = self._fetch_one(
-            """
+            f"""
             UPDATE collections
-            SET name = %s, description = %s, updated_at = NOW()
+            SET {", ".join(set_parts)}, updated_at = NOW()
             WHERE id = %s AND user_id = %s
-            RETURNING id, user_id, name, description, is_public, updated_at, created_at
+            RETURNING id, user_id, name, description, image_url, is_public, updated_at, created_at
             """,
-            (name, description, collection_id, user_id),
+            tuple(values),
         )
         self.create_change_event(user_id, "collection", collection_id, "update", str(old_row), str(updated_row))
         return updated_row
@@ -321,7 +334,7 @@ class VaultRepository:
             UPDATE collections
             SET is_public = %s, updated_at = NOW()
             WHERE id = %s AND user_id = %s
-            RETURNING id, user_id, name, description, is_public, updated_at, created_at
+            RETURNING id, user_id, name, description, image_url, is_public, updated_at, created_at
             """,
             (is_public, collection_id, user_id),
         )
@@ -553,33 +566,45 @@ class VaultRepository:
                 )
                 return cursor.rowcount > 0
 
-    def item_exists(self, item_id: int) -> bool:
-        row = self._fetch_one("SELECT 1 AS ok FROM items WHERE id = %s", (item_id,))
-        return bool(row)
-
-    def get_item_like_snapshot(self, item_id: int, user_id: int | None) -> dict[str, Any]:
-        count_row = self._fetch_one(
+    def get_item_like_visibility_context(self, item_id: int) -> dict[str, Any] | None:
+        return self._fetch_one(
             """
-            SELECT COUNT(*)::int AS likes_count
+            SELECT
+                i.id AS item_id,
+                c.user_id AS owner_id,
+                c.is_public AS collection_is_public,
+                u.is_public AS owner_is_public,
+                u.is_active AS owner_is_active
+            FROM items i
+            JOIN collections c ON c.id = i.collection_id
+            JOIN users u ON u.id = c.user_id
+            WHERE i.id = %s
+            """,
+            (item_id,),
+        )
+
+    def count_item_likes(self, item_id: int) -> int:
+        row = self._fetch_one(
+            """
+            SELECT COUNT(*)::bigint AS cnt
             FROM likes
             WHERE entity_type = 'item' AND entity_id = %s
             """,
             (item_id,),
         )
-        likes_count = int((count_row or {}).get("likes_count") or 0)
-        liked_by_me = False
-        if user_id is not None:
-            liked_row = self._fetch_one(
-                """
-                SELECT 1 AS ok
-                FROM likes
-                WHERE user_id = %s AND entity_type = 'item' AND entity_id = %s
-                LIMIT 1
-                """,
-                (user_id, item_id),
-            )
-            liked_by_me = bool(liked_row)
-        return {"likes_count": likes_count, "liked_by_me": liked_by_me}
+        return int(row["cnt"]) if row else 0
+
+    def user_has_item_like(self, user_id: int, item_id: int) -> bool:
+        row = self._fetch_one(
+            """
+            SELECT 1 AS ok
+            FROM likes
+            WHERE user_id = %s AND entity_type = 'item' AND entity_id = %s
+            LIMIT 1
+            """,
+            (user_id, item_id),
+        )
+        return row is not None
 
     def create_comment(self, user_id: int, entity_type: str, entity_id: int, text: str) -> dict[str, Any]:
         return self._fetch_one(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import base64
+import mimetypes
 import uuid
 from csv import DictWriter
 from datetime import datetime, timedelta, timezone
@@ -34,32 +35,16 @@ from app.schemas import (
 logger = logging.getLogger(__name__)
 
 
-_CONTENT_TYPE_TO_EXT: dict[str, str] = {
-    "image/jpeg": ".jpg",
-    "image/jpg": ".jpg",
-    "image/png": ".png",
-    "image/gif": ".gif",
-    "image/webp": ".webp",
-    "image/heic": ".heic",
-    "image/heif": ".heif",
-}
-
-
 class VaultService:
     def __init__(
         self,
         repository: VaultRepository,
         security_manager: SecurityManager,
-        *,
-        upload_dir: str | None = None,
-        api_prefix: str = "/api",
-        public_base_url: str | None = None,
+        upload_dir: str = "uploads",
     ) -> None:
         self._repository = repository
         self._security_manager = security_manager
-        self._upload_dir = Path(upload_dir or "uploads").resolve()
-        self._api_prefix = (api_prefix or "/api").rstrip("/") or "/api"
-        self._public_base_url = public_base_url.rstrip("/") if public_base_url else None
+        self._upload_dir = Path(upload_dir)
 
     def register(self, payload: RegisterRequest) -> dict[str, Any]:
         existing_user = self._repository.get_user_by_email(payload.email)
@@ -105,6 +90,14 @@ class VaultService:
         payload = self._security_manager.decode_token(token)
         if not payload or "sub" not in payload:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        return int(payload["sub"])
+
+    def try_get_user_id_from_token(self, token: str | None) -> int | None:
+        if not token:
+            return None
+        payload = self._security_manager.decode_token(token)
+        if not payload or "sub" not in payload:
+            return None
         return int(payload["sub"])
 
     def auth_me(self, user_id: int) -> dict[str, Any]:
@@ -202,10 +195,11 @@ class VaultService:
         return self._repository.get_collections(user_id)
 
     def create_collection(self, user_id: int, payload: CollectionCreateRequest) -> dict[str, Any]:
-        return self._repository.create_collection(user_id, payload.name, payload.description)
+        return self._repository.create_collection(user_id, payload.name, payload.description, payload.image_url)
 
     def update_collection(self, user_id: int, collection_id: int, payload: CollectionUpdateRequest) -> dict[str, Any]:
-        result = self._repository.update_collection(user_id, collection_id, payload.name, payload.description)
+        patch = payload.model_dump(exclude_unset=True)
+        result = self._repository.update_collection(user_id, collection_id, patch)
         if not result:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
         return result
@@ -316,17 +310,21 @@ class VaultService:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unable to like this item")
         return like
 
-    def get_item_like_status(self, user_id: int | None, item_id: int) -> dict[str, Any]:
-        if not self._repository.item_exists(item_id):
+    def get_item_like_status(self, viewer_user_id: int | None, item_id: int) -> dict[str, Any]:
+        ctx = self._repository.get_item_like_visibility_context(item_id)
+        if not ctx:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
-        snap = self._repository.get_item_like_snapshot(item_id, user_id)
-        liked = bool(snap.get("liked_by_me"))
-        count = int(snap.get("likes_count") or 0)
+        public_ok = bool(ctx.get("collection_is_public")) and bool(ctx.get("owner_is_public")) and bool(ctx.get("owner_is_active"))
+        is_owner = viewer_user_id is not None and int(ctx["owner_id"]) == viewer_user_id
+        if not public_ok and not is_owner:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
+        likes_count = self._repository.count_item_likes(item_id)
+        liked_by_me = viewer_user_id is not None and self._repository.user_has_item_like(viewer_user_id, item_id)
         return {
-            "liked_by_me": liked,
-            "likes_count": count,
-            "likedByMe": liked,
-            "likesCount": count,
+            "liked_by_me": liked_by_me,
+            "likes_count": likes_count,
+            "likedByMe": liked_by_me,
+            "likesCount": likes_count,
         }
 
     def delete_item_like(self, user_id: int, item_id: int) -> dict[str, bool]:
@@ -440,31 +438,78 @@ class VaultService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
         return {"avatar_url": str(row.get("avatar_url") or "")}
 
-    def upload_image_file(self, file_content: bytes, filename: str | None, content_type: str | None) -> dict[str, Any]:
+    @staticmethod
+    def _guess_image_extension(filename: str | None, content_type: str | None) -> str | None:
+        mime_by_type = {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+            "image/gif": ".gif",
+        }
+        mime = (content_type or "").split(";")[0].strip().lower()
+        if mime in mime_by_type:
+            return mime_by_type[mime]
+        if filename and "." in filename:
+            suf = Path(filename).suffix.lower()
+            if suf in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+                return ".jpg" if suf == ".jpeg" else suf
+        guessed = mimetypes.guess_extension(mime or "") if mime else None
+        if guessed in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+            return ".jpg" if guessed == ".jpeg" else guessed
+        return None
+
+    def save_public_image_upload(
+        self,
+        file_content: bytes,
+        filename: str | None,
+        content_type: str | None,
+        api_prefix: str,
+        public_base_url: str,
+        public_media_url_prefix: str = "",
+        request_public_base: str | None = None,
+    ) -> dict[str, Any]:
         if not file_content:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is empty")
-        raw_ct = (content_type or "").split(";")[0].strip().lower()
-        if not raw_ct.startswith("image/"):
+        max_bytes = 8 * 1024 * 1024
+        if len(file_content) > max_bytes:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File too large")
+        media_type = (content_type or "").split(";")[0].strip().lower()
+        if not media_type.startswith("image/"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File must be an image")
-        ext = _CONTENT_TYPE_TO_EXT.get(raw_ct)
+        ext = self._guess_image_extension(filename, content_type)
         if not ext:
-            suffix = Path(filename or "").suffix.lower()
-            if suffix in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif"}:
-                ext = ".jpg" if suffix == ".jpeg" else suffix
-            else:
-                ext = ".jpg"
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported image type")
         self._upload_dir.mkdir(parents=True, exist_ok=True)
         stored_name = f"{uuid.uuid4().hex}{ext}"
-        stored_path = self._upload_dir / stored_name
-        stored_path.write_bytes(file_content)
-        relative_path = f"{self._api_prefix}/uploads/{stored_name}"
-        primary_url = f"{self._public_base_url}{relative_path}" if self._public_base_url else relative_path
-        return {
-            "url": primary_url,
-            "image_url": primary_url,
-            "imageUrl": primary_url,
-            "path": relative_path,
+        path = self._upload_dir / stored_name
+        path.write_bytes(file_content)
+        prefix = api_prefix.rstrip("/") or "/api"
+        relative_url = f"{prefix}/uploads/{stored_name}"
+        media_prefix = public_media_url_prefix.strip()
+        base = public_base_url.strip()
+        req_base = (request_public_base or "").strip().rstrip("/")
+        if media_prefix:
+            canonical = f"{media_prefix}/{stored_name}"
+        elif base:
+            canonical = f"{base}{relative_url}"
+        elif req_base:
+            canonical = f"{req_base}{relative_url}"
+        else:
+            canonical = relative_url
+        payload: dict[str, Any] = {
+            "url": canonical,
+            "image_url": canonical,
+            "file_url": canonical,
+            "public_url": canonical,
+            "filename": stored_name,
+            "data": {"url": canonical},
         }
+        if not media_prefix and (base or req_base) and canonical.startswith("http"):
+            payload["absolute_url"] = canonical
+            payload["data"]["absolute_url"] = canonical
+        if canonical != relative_url:
+            payload["path"] = relative_url
+        return payload
 
     def report_collection(self, user_id: int, collection_id: int, from_date: datetime, to_date: datetime) -> list[dict[str, Any]]:
         return self._repository.report_collection(user_id, collection_id, from_date, to_date)

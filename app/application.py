@@ -27,14 +27,13 @@ class AppFactory:
             repository=self._repository,
             security_manager=self._security_manager,
             upload_dir=self._settings.upload_dir,
-            api_prefix=self._settings.api_prefix,
-            public_base_url=self._settings.public_base_url,
         )
 
     def create_app(self) -> FastAPI:
         @asynccontextmanager
         async def lifespan(_: FastAPI):
             ensure_schema_applied(self._settings.database_url)
+            Path(self._settings.upload_dir).mkdir(parents=True, exist_ok=True)
             self._database.connect()
             yield
             self._database.disconnect()
@@ -57,14 +56,20 @@ class AppFactory:
         )
 
         health_controller = HealthController(database=self._database)
-        vault_controller = VaultController(service=self._service)
+        vault_controller = VaultController(
+            service=self._service,
+            api_prefix=prefix,
+            public_base_url=self._settings.public_base_url,
+            public_media_url_prefix=self._settings.public_media_url_prefix,
+        )
         app.include_router(health_controller.router, prefix=prefix)
         app.include_router(vault_controller.router, prefix=prefix)
-
-        upload_dir = Path(self._settings.upload_dir).resolve()
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        app.mount(f"{prefix}/uploads", StaticFiles(directory=str(upload_dir)), name="uploads")
-
+        upload_root = Path(self._settings.upload_dir).resolve()
+        app.mount(
+            f"{prefix}/uploads",
+            StaticFiles(directory=str(upload_root)),
+            name="uploads",
+        )
         return app
 
 

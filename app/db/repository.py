@@ -111,6 +111,52 @@ class VaultRepository:
             (user_id,),
         )
 
+    def get_wallet_balance_usd(self, user_id: int) -> Decimal | None:
+        row = self._fetch_one(
+            """
+            SELECT wallet_balance_usd
+            FROM users
+            WHERE id = %s AND is_active = TRUE
+            """,
+            (user_id,),
+        )
+        if not row:
+            return None
+        return Decimal(str(row.get("wallet_balance_usd") or 0))
+
+    def deposit_wallet(self, user_id: int, amount_usd: Decimal, reference: str | None) -> dict[str, Any] | None:
+        with self._database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET wallet_balance_usd = wallet_balance_usd + %s, updated_at = NOW()
+                    WHERE id = %s AND is_active = TRUE
+                    RETURNING wallet_balance_usd
+                    """,
+                    (amount_usd, user_id),
+                )
+                updated = cursor.fetchone()
+                if not updated:
+                    return None
+                new_balance = updated[0]
+                cursor.execute(
+                    """
+                    INSERT INTO wallet_deposits (user_id, amount_usd, reference)
+                    VALUES (%s, %s, %s)
+                    RETURNING id, created_at
+                    """,
+                    (user_id, amount_usd, reference),
+                )
+                dep = cursor.fetchone()
+                if not dep:
+                    return None
+                return {
+                    "wallet_balance_usd": new_balance,
+                    "deposit_id": dep[0],
+                    "created_at": dep[1],
+                }
+
     def get_public_users(self, limit: int, offset: int) -> list[dict[str, Any]]:
         return self._fetch_all(
             """

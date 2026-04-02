@@ -29,6 +29,7 @@ from app.schemas import (
     ProfileUpdateRequest,
     RegisterRequest,
     VisibilityUpdateRequest,
+    WalletDepositRequest,
     WishlistCreateRequest,
 )
 
@@ -422,6 +423,9 @@ class VaultService:
     def update_my_avatar(self, user_id: int, filename: str | None, content_type: str | None, file_content: bytes) -> dict[str, str]:
         if not file_content:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Avatar file is empty")
+        max_avatar_bytes = 2 * 1024 * 1024
+        if len(file_content) > max_avatar_bytes:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Avatar file too large")
         media_type = content_type or "application/octet-stream"
         if not media_type.startswith("image/"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Avatar must be an image")
@@ -437,6 +441,33 @@ class VaultService:
         if not row:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
         return {"avatar_url": str(row.get("avatar_url") or "")}
+
+    @staticmethod
+    def _wallet_balance_payload(balance: Decimal) -> dict[str, Any]:
+        b = float(balance)
+        return {
+            "balance_usd": b,
+            "balance": b,
+            "wallet_balance": b,
+            "wallet": {"balance_usd": b, "balance": b},
+        }
+
+    def get_wallet_balance(self, user_id: int) -> dict[str, Any]:
+        bal = self._repository.get_wallet_balance_usd(user_id)
+        if bal is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        return self._wallet_balance_payload(bal)
+
+    def deposit_wallet(self, user_id: int, payload: WalletDepositRequest) -> dict[str, Any]:
+        result = self._repository.deposit_wallet(user_id, payload.amount_usd, payload.reference)
+        if not result:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        new_bal = Decimal(str(result["wallet_balance_usd"]))
+        out = self._wallet_balance_payload(new_bal)
+        out["deposited_usd"] = float(payload.amount_usd)
+        out["reference"] = payload.reference
+        out["deposit_id"] = result["deposit_id"]
+        return out
 
     @staticmethod
     def _guess_image_extension(filename: str | None, content_type: str | None) -> str | None:

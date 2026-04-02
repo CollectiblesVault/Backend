@@ -20,7 +20,7 @@ class ProfileUpdateRequest(BaseModel):
     email: EmailStr | None = None
     display_name: str | None = Field(default=None, min_length=1, max_length=120)
     bio: str | None = Field(default=None, max_length=1000)
-    avatar_url: str | None = Field(default=None, max_length=500)
+    avatar_url: str | None = Field(default=None, max_length=2_097_152)
 
 
 class PasswordUpdateRequest(BaseModel):
@@ -96,3 +96,8 @@ class LotCreateRequest(BaseModel):
 class BidCreateRequest(BaseModel):
     lot_id: int
     amount: Decimal = Field(gt=0)
+
+
+class WalletDepositRequest(BaseModel):
+    amount_usd: Decimal = Field(gt=0)
+    reference: str | None = Field(default=None, max_length=500)

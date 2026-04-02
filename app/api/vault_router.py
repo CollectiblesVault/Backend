@@ -21,6 +21,7 @@ from app.schemas import (
     ProfileUpdateRequest,
     RegisterRequest,
     VisibilityUpdateRequest,
+    WalletDepositRequest,
     WishlistCreateRequest,
 )
 from app.services.vault_service import VaultService
@@ -89,6 +90,8 @@ class VaultController:
         self.router.add_api_route("/items/{item_id}/wishlist", self.delete_item_from_wishlist, methods=["DELETE"], tags=["wishlist"])
         self.router.add_api_route("/categories", self.get_categories, methods=["GET"], tags=["categories"])
         self.router.add_api_route("/categories", self.create_category, methods=["POST"], tags=["categories"])
+        self.router.add_api_route("/wallet/deposit", self.post_wallet_deposit, methods=["POST"], tags=["wallet"])
+        self.router.add_api_route("/wallet", self.get_wallet, methods=["GET"], tags=["wallet"])
         self.router.add_api_route("/wishlist", self.get_wishlist, methods=["GET"], tags=["wishlist"])
         self.router.add_api_route("/wishlist", self.create_wishlist, methods=["POST"], tags=["wishlist"])
         self.router.add_api_route("/wishlist/{wishlist_id}", self.delete_wishlist, methods=["DELETE"], tags=["wishlist"])
@@ -239,6 +242,18 @@ class VaultController:
     def create_category(self, payload: CategoryCreateRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         user_id = self._get_current_user_id(authorization)
         return self._service.create_category(user_id, payload.name)
+
+    def get_wallet(self, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        user_id = self._get_current_user_id(authorization)
+        return self._service.get_wallet_balance(user_id)
+
+    def post_wallet_deposit(
+        self,
+        payload: WalletDepositRequest,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        user_id = self._get_current_user_id(authorization)
+        return self._service.deposit_wallet(user_id, payload)
 
     def get_wishlist(self, authorization: str | None = Header(default=None)) -> list[dict[str, Any]]:
         user_id = self._get_current_user_id(authorization)

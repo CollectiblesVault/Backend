@@ -113,6 +113,7 @@ class VaultController:
         self.router.add_api_route("/lots/{lot_id}/bids", self.get_lot_bids, methods=["GET"], tags=["auction"])
         self.router.add_api_route("/lots/{lot_id}/close", self.close_lot, methods=["POST"], tags=["auction"])
         self.router.add_api_route("/lots/settle-expired", self.settle_expired_lots, methods=["POST"], tags=["auction"])
+        self.router.add_api_route("/lots/{lot_id}", self.get_lot_detail, methods=["GET"], tags=["auction"])
         self.router.add_api_route("/bid", self.create_bid, methods=["POST"], tags=["auction"])
 
     def register(self, payload: RegisterRequest) -> dict[str, Any]:
@@ -383,8 +384,13 @@ class VaultController:
         user_id = self._get_current_user_id(authorization)
         return self._service.create_lot(user_id, payload)
 
-    def get_lots(self) -> list[dict[str, Any]]:
-        return self._service.get_lots()
+    def get_lots(self, authorization: str | None = Header(default=None)) -> list[dict[str, Any]]:
+        viewer_id = self._get_optional_user_id(authorization)
+        return self._service.get_lots(viewer_id)
+
+    def get_lot_detail(self, lot_id: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        viewer_id = self._get_optional_user_id(authorization)
+        return self._service.get_lot_auction(lot_id, viewer_id)
 
     def get_lot_bids(self, lot_id: int) -> list[dict[str, Any]]:
         return self._service.get_lot_bids(lot_id)

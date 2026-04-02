@@ -25,8 +25,13 @@ services:
       JWT_SECRET: ${JWT_SECRET:-super_secret_change_me}
       JWT_ALGORITHM: HS256
       JWT_EXP_MINUTES: "60"
+      # Must match StaticFiles mount + save path (see app/core/config.py UPLOAD_DIR)
+      UPLOAD_DIR: /app/uploads
     ports:
       - "8000:8000"
+    volumes:
+      # Файлы на диске хоста (папка ./uploads рядом с docker-compose.yml), не только внутри контейнера.
+      - ./uploads:/app/uploads
 
 volumes:
   postgres_data:

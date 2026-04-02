@@ -726,6 +726,148 @@ class VaultRepository:
             "SELECT id, seller_id, collection_id, winner_id, name, description, start_price, step, end_time, status, created_at, closed_at FROM auction_lots ORDER BY id DESC"
         )
 
+    def get_lots_enriched(self, viewer_user_id: int | None) -> list[dict[str, Any]]:
+        if viewer_user_id is not None:
+            return self._fetch_all(
+                """
+                SELECT
+                    l.id,
+                    l.seller_id,
+                    l.collection_id,
+                    l.winner_id,
+                    l.name,
+                    l.description,
+                    l.start_price,
+                    l.step,
+                    l.end_time,
+                    l.status,
+                    l.created_at,
+                    l.closed_at,
+                    COALESCE(tb.amount, l.start_price) AS current_price,
+                    tb.user_id AS leading_bidder_id,
+                    CASE WHEN tb.user_id IS NOT NULL THEN
+                        COALESCE(lead_u.display_name, CONCAT('user', lead_u.id::text))
+                    END AS leading_bidder_name,
+                    lead_u.avatar_url AS leading_bidder_avatar,
+                    ub.amount AS my_last_bid
+                FROM auction_lots l
+                LEFT JOIN LATERAL (
+                    SELECT user_id, amount FROM bids WHERE lot_id = l.id
+                    ORDER BY amount DESC, created_at ASC LIMIT 1
+                ) tb ON true
+                LEFT JOIN users lead_u ON lead_u.id = tb.user_id
+                LEFT JOIN LATERAL (
+                    SELECT amount FROM bids WHERE lot_id = l.id AND user_id = %s
+                    ORDER BY amount DESC LIMIT 1
+                ) ub ON true
+                ORDER BY l.id DESC
+                """,
+                (viewer_user_id,),
+            )
+        return self._fetch_all(
+            """
+            SELECT
+                l.id,
+                l.seller_id,
+                l.collection_id,
+                l.winner_id,
+                l.name,
+                l.description,
+                l.start_price,
+                l.step,
+                l.end_time,
+                l.status,
+                l.created_at,
+                l.closed_at,
+                COALESCE(tb.amount, l.start_price) AS current_price,
+                tb.user_id AS leading_bidder_id,
+                CASE WHEN tb.user_id IS NOT NULL THEN
+                    COALESCE(lead_u.display_name, CONCAT('user', lead_u.id::text))
+                END AS leading_bidder_name,
+                lead_u.avatar_url AS leading_bidder_avatar,
+                NULL::numeric AS my_last_bid
+            FROM auction_lots l
+            LEFT JOIN LATERAL (
+                SELECT user_id, amount FROM bids WHERE lot_id = l.id
+                ORDER BY amount DESC, created_at ASC LIMIT 1
+            ) tb ON true
+            LEFT JOIN users lead_u ON lead_u.id = tb.user_id
+            ORDER BY l.id DESC
+            """,
+            (),
+        )
+
+    def get_lot_enriched(self, lot_id: int, viewer_user_id: int | None) -> dict[str, Any] | None:
+        if viewer_user_id is not None:
+            return self._fetch_one(
+                """
+                SELECT
+                    l.id,
+                    l.seller_id,
+                    l.collection_id,
+                    l.winner_id,
+                    l.name,
+                    l.description,
+                    l.start_price,
+                    l.step,
+                    l.end_time,
+                    l.status,
+                    l.created_at,
+                    l.closed_at,
+                    COALESCE(tb.amount, l.start_price) AS current_price,
+                    tb.user_id AS leading_bidder_id,
+                    CASE WHEN tb.user_id IS NOT NULL THEN
+                        COALESCE(lead_u.display_name, CONCAT('user', lead_u.id::text))
+                    END AS leading_bidder_name,
+                    lead_u.avatar_url AS leading_bidder_avatar,
+                    ub.amount AS my_last_bid
+                FROM auction_lots l
+                LEFT JOIN LATERAL (
+                    SELECT user_id, amount FROM bids WHERE lot_id = l.id
+                    ORDER BY amount DESC, created_at ASC LIMIT 1
+                ) tb ON true
+                LEFT JOIN users lead_u ON lead_u.id = tb.user_id
+                LEFT JOIN LATERAL (
+                    SELECT amount FROM bids WHERE lot_id = l.id AND user_id = %s
+                    ORDER BY amount DESC LIMIT 1
+                ) ub ON true
+                WHERE l.id = %s
+                """,
+                (viewer_user_id, lot_id),
+            )
+        return self._fetch_one(
+            """
+            SELECT
+                l.id,
+                l.seller_id,
+                l.collection_id,
+                l.winner_id,
+                l.name,
+                l.description,
+                l.start_price,
+                l.step,
+                l.end_time,
+                l.status,
+                l.created_at,
+                l.closed_at,
+                COALESCE(tb.amount, l.start_price) AS current_price,
+                tb.user_id AS leading_bidder_id,
+                CASE WHEN tb.user_id IS NOT NULL THEN
+                    COALESCE(lead_u.display_name, CONCAT('user', lead_u.id::text))
+                END AS leading_bidder_name,
+                lead_u.avatar_url AS leading_bidder_avatar,
+                NULL::numeric AS my_last_bid
+            FROM auction_lots l
+            LEFT JOIN LATERAL (
+                SELECT user_id, amount FROM bids WHERE lot_id = l.id
+                ORDER BY amount DESC, created_at ASC LIMIT 1
+            ) tb ON true
+            LEFT JOIN users lead_u ON lead_u.id = tb.user_id
+            WHERE l.id = %s
+            """,
+            (lot_id,),
+        )
+
     def get_lot(self, lot_id: int) -> dict[str, Any] | None:
         return self._fetch_one("SELECT * FROM auction_lots WHERE id = %s", (lot_id,))
 

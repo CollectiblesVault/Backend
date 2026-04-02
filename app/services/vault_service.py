@@ -371,9 +371,16 @@ class VaultService:
             payload.end_time,
         )
 
-    def get_lots(self) -> list[dict[str, Any]]:
+    def get_lots(self, viewer_user_id: int | None) -> list[dict[str, Any]]:
         self._repository.close_expired_lots()
-        return self._repository.get_lots()
+        return self._repository.get_lots_enriched(viewer_user_id)
+
+    def get_lot_auction(self, lot_id: int, viewer_user_id: int | None) -> dict[str, Any]:
+        self._repository.close_expired_lots()
+        row = self._repository.get_lot_enriched(lot_id, viewer_user_id)
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lot not found")
+        return row
 
     def create_bid(self, user_id: int, payload: BidCreateRequest) -> dict[str, Any]:
         lot = self._repository.get_lot(payload.lot_id)
